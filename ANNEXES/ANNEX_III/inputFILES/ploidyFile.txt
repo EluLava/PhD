@@ -1,0 +1,9 @@
+Super-Scaffold_13 1 48838493 M 2
+Super-Scaffold_13 1 48838493 F 1
+Super-Scaffold_42 1 41426968 M 2
+Super-Scaffold_42 1 4415000 F 2
+Super-Scaffold_42 4415001 7364000 F 1
+Super-Scaffold_42 7364001 7389000 F 2
+Super-Scaffold_42 7389001 41426968 F 1
+* * * M 2
+* * * F 2

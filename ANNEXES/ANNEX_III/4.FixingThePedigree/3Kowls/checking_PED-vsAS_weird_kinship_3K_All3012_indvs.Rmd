@@ -1,0 +1,2575 @@
+---
+title: "Fixing 3K (3102) weird PED vs AS Kinships"
+author: "E. Lavanchy"
+date: "10/26/2023"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r reading_files, echo = TRUE}
+
+library(hierfstat)
+library(corrplot)
+
+birds = read.csv("~/PhD/Barn_owl/ID_in3Kowls/data/BarnOwls_Legacy_2023.10.23/BarnOwls_Legacy_20231023111917_Bird.csv")
+
+#Read PEDIGREE kinship matrix
+BetaPED = as.matrix(read.table("~/PhD/Barn_owl/3Kowls/data/chechinkgGLIMPSu/A_pedigree_kinship_matrix.txt"))
+namesBetaPED = read.table("~/PhD/Barn_owl/3Kowls/data/chechinkgGLIMPSu/A_pedigree_kinship_matrix.txt", nrows = 1)
+namesBetaPED = as.vector(namesBetaPED[1,], mode = "character")
+colnames(BetaPED) = namesBetaPED
+rownames(BetaPED) = namesBetaPED
+
+grmAS = readRDS("~/PhD/Barn_owl/ID_in3Kowls/data/checkingINDVsGRMvalues/All3102_AUTOSAUMES_RP502SNPs.RDS")
+
+kas = grm2kinship(grmAS)
+
+#read pedigree itself
+ped = read.table("~/PhD/Barn_owl/ID_in3Kowls/data/pedigree_290623.tab", h = T)
+
+```
+
+## Extracting list of individuals with weird kinships AS vs PED
+
+First we need to sub-sample the pedigree matrix so that it only contains the 3102 sequenced individuals. Then we nee to make sure that individuals orders are matching between both matrices (genomic and pedigree kinship) !
+
+```{r individuals_order, echo = TRUE}
+
+#subsample sequenced individuals
+BetaPEDsub = BetaPED[rownames(BetaPED) %in% rownames(kas), colnames(BetaPED) %in% colnames(kas)]
+
+#change betaPED order so that individuals' order matches AS kinship matrix order
+orderCOL = match(colnames(kas), colnames(BetaPEDsub))
+BetaPEDsuborder = BetaPEDsub[orderCOL,orderCOL]
+
+#sanity check
+unique(colnames(kas) == colnames(BetaPEDsuborder))
+unique(rownames(kas) == rownames(BetaPEDsuborder))
+
+```
+
+Then we extract the differences between pedigree and genomic matrices
+
+```{r difference_extraction, echo = TRUE}
+
+#subtract genetic matrix from pedigree matrix
+diff_kin = BetaPEDsuborder - kas
+
+#mean difference
+mean(diff_kin) #0.001, very low
+
+```
+
+We can look (and hopefully solve) differences above 0.2 and below -0.2 ! So we'll extract the pairs of individuals which have high differences !
+
+```{r difference_stats, echo = TRUE}
+
+#How many problems do we have here ?
+length(diff_kin[(diff_kin > .2) | (diff_kin < -.2)]) #1734 (out of 9,622,404)
+#but each pair actually appears twice (because the matrix is symmetrical)
+#so we have 867 weird links !
+
+```
+
+So we have `r {length(diff_kin[(diff_kin > .2) | (diff_kin < -.2)])}` links which have an absolute difference above 0.2. Since the matrix is symmetrical, all the pairs are represented twice so in the end, we have `r {length(diff_kin[(diff_kin > .2) | (diff_kin < -.2)])/2}` weird links.
+
+When the difference is below -0.2 it means that the genomic kinship is higher than the pedigree kinship. This probably indicates that our pedigree is missing some links. We have `r {length(diff_kin[diff_kin < -.2])}` cases for which genomic kinship is higher than pedigree kinship. We won't fix these problems (at least here) since they are not really problems.
+
+On the contrary, when the difference is above 0.2 it means that the pedigree kinship is higher than the genomic kinship. These are more problematic because it either means that our pedigree is wrong or that we did not sequenced the individual·s we though we sequenced ! We'll dig into these pairs.
+
+Finally, we also need to be wary of very high genomic kinship values (< .4) between pairs of individuals which would mean that: individuals are related and inbred (which is good, we want to keep these individuals) OR if close to 0.5 that individuals are twins or the same individual (we mislabeled one of the tubes, which is bad). If the latter, we cannot really solve the problem because we need to be absolutely sure than the phenotypes are linked to the correct individual, so we would usually remove both individuals.
+
+## AS kinship higher than 0.4
+
+We'll first dig into the pairs for which the genomic kinship is higher than 0.4!
+
+```{r ASkinshipHIGH, echo = TRUE}
+
+#For this we need to get rid of the diagonal values because they all (should) be above 0.4
+kasHIGH = kas
+
+#First set diagonal to NA (because all self-kinship will be above .4)
+diag(kasHIGH) = NA
+#Then also set upper triangle of the matric to NA (because matrix is symmetrical)
+kasHIGH[upper.tri(kasHIGH)] = NA
+
+WeirdgenKin = which(kasHIGH > .4, arr.ind = T)
+
+#Add the pair guy
+WeirdgenKinnames = as.data.frame(cbind(rownames(kas)[WeirdgenKin[,1]],
+                                       rownames(kas)[WeirdgenKin[,2]],WeirdgenKin))
+
+rownames(WeirdgenKinnames) = NULL
+colnames(WeirdgenKinnames)[1:2] = c("RingId1","RindId2")
+WeirdgenKinnames
+
+```
+
+We only have `r {nrow(WeirdgenKin)}` pairs with a weirdly high kinship! We'll investigate these pairs one by one!
+
+### pair 1
+
+The first pair are individuals `r {rownames(kas)[WeirdgenKin[1,][1]]}` and `r {colnames(kas)[WeirdgenKin[1,][2]]}` with a kinship of `r {round(kas[WeirdgenKin[1,][1],WeirdgenKin[1,][2]], digits = 3)}`.
+
+```{r ASkinshipHIGH_pair1, echo = TRUE}
+
+#what is the genomic kinship
+kas[WeirdgenKin[1,][1],WeirdgenKin[1,][2]]
+
+#pedigree kinship
+BetaPEDsuborder[WeirdgenKin[1,][1],WeirdgenKin[1,][2]]
+
+#subset family matrix
+kASweirdFam = kas[rownames(kas) %in% c(WeirdgenKinnames[1,][1],WeirdgenKinnames[1,][2]),
+                  colnames(kas) %in% c(WeirdgenKinnames[1,][1],WeirdgenKinnames[1,][2])]
+
+#If we look at this family plot
+corrplot(kASweirdFam, method = "color", addCoef.col = "black")
+
+#parents of both individuals
+ped[ped$animal == "M026451",]
+ped[ped$animal == "M026477",]
+
+```
+
+The kinship is close to 0.5 indicating that we have either mislabeled individuals and it's the same individuals we sequenced twice, either that they are twins. The pedigree kinship is `r {BetaPEDsuborder[WeirdgenKin[1,][1],WeirdgenKin[1,][2]]}` and they have the same parents. So they might be twins but since we can never be sure, we'll remove both of these individuals from our analyses.
+
+### pairs 2 & 3
+
+We'll study the second and third pairs together because it's one individual (`r {colnames(kas)[WeirdgenKin[2,][2]]}`) which has high kinship with two of its siblings: `r {rownames(kas)[WeirdgenKin[2,][1]]}` and `r {colnames(kas)[WeirdgenKin[3,][1]]}`. Kinship values are `r {round(kas[WeirdgenKin[2,][1],WeirdgenKin[2,][2]], digits = 3)}` and `r {round(kas[WeirdgenKin[3,][1],WeirdgenKin[3,][2]], digits = 3)}`.
+
+```{r ASkinshipHIGH_pair23, echo = TRUE}
+
+#what is the genomic kinships
+kas[WeirdgenKin[2,][1],WeirdgenKin[2,][2]]
+kas[WeirdgenKin[3,][1],WeirdgenKin[3,][2]]
+
+#pedigree kinships
+BetaPEDsuborder[WeirdgenKin[2,][1],WeirdgenKin[2,][2]]
+BetaPEDsuborder[WeirdgenKin[3,][1],WeirdgenKin[3,][2]]
+
+#subset family matrix
+kASweirdFam = kas[rownames(kas) %in% c(WeirdgenKinnames[2,][1], WeirdgenKinnames[2,][2],
+                                       WeirdgenKinnames[3,][1]),
+                  colnames(kas) %in% c(WeirdgenKinnames[2,][1], WeirdgenKinnames[2,][2],
+                                       WeirdgenKinnames[3,][1])]
+
+#If we look at this family plot
+corrplot(kASweirdFam, method = "color", addCoef.col = "black")
+
+#parents of the three individuals
+ped[ped$animal == "M031770",]
+ped[ped$animal == "M031772",]
+ped[ped$animal == "M031773",]
+
+```
+
+The kinship is below (0.5) so it's not twins (or the same individuals). These individuals are siblings (they have the same parents) and the pedigree kinship is above 0.25 and close to the observed genomic value (`r {round(BetaPEDsuborder[WeirdgenKin[2,][1],WeirdgenKin[2,][2]], digits = 3)}`). This simply indicates that these individuals are siblings and are inbred so we'll keep the three of them !
+
+### pair 4
+
+The forth pair are individuals `r {rownames(kas)[WeirdgenKin[4,][1]]}` and `r {colnames(kas)[WeirdgenKin[4,][2]]}` with a kinship of `r {round(kas[WeirdgenKin[4,][1],WeirdgenKin[4,][2]], digits = 3)}`.
+
+```{r ASkinshipHIGH_pair4, echo = TRUE}
+
+#what is the genomic kinship
+kas[WeirdgenKin[4,][1],WeirdgenKin[4,][2]]
+
+#pedigree kinship
+BetaPEDsuborder[WeirdgenKin[4,][1],WeirdgenKin[4,][2]]
+
+#subset family matrix
+kASweirdFam = kas[rownames(kas) %in% c(WeirdgenKinnames[4,][1], WeirdgenKinnames[4,][2]),
+                  colnames(kas) %in% c(WeirdgenKinnames[4,][1], WeirdgenKinnames[4,][2])]
+
+#If we look at this family plot
+corrplot(kASweirdFam, method = "color", addCoef.col = "black")
+
+#parents of both individuals
+ped[ped$animal == "M043615",]
+ped[ped$animal == "M038321",]
+
+```
+
+Just like before, the genomic kinship is close to 0.4 and the matches the pedigree kinship quite well (`r {round(BetaPEDsuborder[WeirdgenKin[4,][1],WeirdgenKin[4,][2]], digits = 3)}`). These individuals are mother - offspring but the mother here mated with her dad to create this offspring. So the kinship we observe is OK, we'll keep both individuals.
+
+### pair 5
+
+The fifth pair are individuals `r {rownames(kas)[WeirdgenKin[5,][1]]}` and `r {colnames(kas)[WeirdgenKin[5,][2]]}` with a kinship of `r {round(kas[WeirdgenKin[5,][1],WeirdgenKin[5,][2]], digits = 3)}`.
+
+```{r ASkinshipHIGH_pair5, echo = TRUE}
+
+#what is the genomic kinship
+kas[WeirdgenKin[5,][1],WeirdgenKin[5,][2]]
+
+#pedigree kinship
+BetaPEDsuborder[WeirdgenKin[5,][1],WeirdgenKin[5,][2]]
+
+#subset family matrix
+kASweirdFam = kas[rownames(kas) %in% c(WeirdgenKinnames[5,][1], WeirdgenKinnames[5,][2]),
+                  colnames(kas) %in% c(WeirdgenKinnames[5,][1], WeirdgenKinnames[5,][2])]
+
+#If we look at this family plot
+corrplot(kASweirdFam, method = "color", addCoef.col = "black")
+
+#parents of both individuals
+ped[ped$animal == "M047568",]
+ped[ped$animal == "M040628",]
+#parents of the dad of M047568
+ped[ped$animal == "M040627",]
+
+```
+
+Genomic kinship is close to 0.4 and the matches the pedigree kinship quite well (`r {round(BetaPEDsuborder[WeirdgenKin[5,][1],WeirdgenKin[5,][2]], digits = 3)}`). These individuals are father - offspring and the father mated with his sibling (they have the same parents) to create this offspring. So the kinship we observe is OK, we'll keep both individuals.
+
+### pair 6
+
+The sixth pair are individuals `r {rownames(kas)[WeirdgenKin[6,][1]]}` (same individual as offspring in pair 5) and `r {colnames(kas)[WeirdgenKin[6,][2]]}` with a kinship of `r {round(kas[WeirdgenKin[6,][1],WeirdgenKin[6,][2]], digits = 3)}`.
+
+```{r ASkinshipHIGH_pair6, echo = TRUE}
+
+#what is the genomic kinship
+kas[WeirdgenKin[6,][1],WeirdgenKin[6,][2]]
+
+#pedigree kinship
+BetaPEDsuborder[WeirdgenKin[6,][1],WeirdgenKin[6,][2]]
+
+#subset family matrix
+kASweirdFam = kas[rownames(kas) %in% c(WeirdgenKinnames[6,][1], WeirdgenKinnames[6,][2]),
+                  colnames(kas) %in% c(WeirdgenKinnames[6,][1], WeirdgenKinnames[6,][2])]
+
+#If we look at this family plot
+corrplot(kASweirdFam, method = "color", addCoef.col = "black")
+
+#parents of both individuals
+ped[ped$animal == "M047568",]
+ped[ped$animal == "M043044",]
+
+```
+
+Again, the genomic kinship is close to 0.4 and matches the pedigree kinship quite well (`r {round(BetaPEDsuborder[WeirdgenKin[6,][1],WeirdgenKin[6,][2]], digits = 3)}`). These individuals are siblings and are inbred so they both some from a mating between siblings. We can check the kinship between the second offspring (`r {rownames(kas)[WeirdgenKin[6,][1]]}`) and the father we identified before (`r {colnames(kas)[WeirdgenKin[5,][2]]}`): `r {round(kas[rownames(kas) == "M043044",colnames(kas) == "M040628"], digits = 3)}`. It is just below 0.4 so we did not detect because of the 0.4 threshold we set, but it is close to 0.4, which makes sense ! We'll keep both individuals !
+
+### pair 7
+
+The seventh pair are individuals `r {rownames(kas)[WeirdgenKin[7,][1]]}` and `r {colnames(kas)[WeirdgenKin[7,][2]]}` with a kinship of `r {round(kas[WeirdgenKin[7,][1],WeirdgenKin[7,][2]], digits = 3)}`.
+
+```{r ASkinshipHIGH_pair7, echo = TRUE}
+
+#what is the genomic kinship
+kas[WeirdgenKin[7,][1],WeirdgenKin[7,][2]]
+
+#pedigree kinship
+BetaPEDsuborder[WeirdgenKin[7,][1],WeirdgenKin[7,][2]]
+
+#subset family matrix
+kASweirdFam = kas[rownames(kas) %in% c(WeirdgenKinnames[7,][1], WeirdgenKinnames[7,][2]),
+                  colnames(kas) %in% c(WeirdgenKinnames[7,][1], WeirdgenKinnames[7,][2])]
+
+#If we look at this family plot
+corrplot(kASweirdFam, method = "color", addCoef.col = "black")
+
+#parents of both individuals
+ped[ped$animal == "M043616",]
+ped[ped$animal == "M043620",]
+
+```
+
+Here we have a problem. The genomic kinship indicates that these individuals are twins / the same but the pedigree indicates that they should be unrelated, so they are certainly not twins: they are probably the same individual which has been sequenced twice. Now the problem is to know which individual it is (between M043616 & M043620)! Luckily, we know that M043616 has siblings we also sequenced (with which M043620 should be unrelated).
+
+```{r ASkinshipHIGH_pair7SIBLINGS, echo = TRUE}
+
+#parents of M043616
+ped[ped$animal == "M043616",]
+
+#Look for M043616 siblings
+ped$animal[(ped$sire == "M036843") & (ped$dam == "M027838") &
+             !(is.na(ped$sire)) & !(is.na(ped$dam))]
+```
+
+Did we sequence them ?
+
+```{r ASkinshipHIGH_pair7SIBLINGSseq, echo = TRUE}
+
+#Did we sequence them ?
+("M043612" %in% colnames(kas))
+("M043614" %in% colnames(kas))
+
+```
+
+No we did not sequenced them. However, from the database we know that this clutch (clutch n° 2014) initially contained two more individuals, which were later transferred to the clutch where M043620 comes from (clutch n° 2011). These individuals are individuals M043618 & M043619. We also know that the clutch in which individual M043620 was born (clutch n° 2011) initially contained three other individuals: M043613, M043615 and M043617. Then M043618 and M043619 were raised in clutch 2011 (cross-fostering) and individuals M043613 and M043615 were raised in clutch 2014 (also cross-fostering).
+
+Among these "new" siblings, did we sequence any of them ?
+
+```{r ASkinshipHIGH_pair7SIBLINGSseq2, echo = TRUE}
+
+#Did we sequence them ?
+("M043613" %in% colnames(kas))
+("M043615" %in% colnames(kas))
+("M043617" %in% colnames(kas))
+("M043618" %in% colnames(kas))
+("M043619" %in% colnames(kas))
+
+```
+
+We sequenced most of them: M043615, M043617, M043618 and M043619. So now we'll check with which individuals M043616/M043620 are related so we can infer which clutch it came from and finally which individual it is between M043616 or M043620.
+
+```{r ASkinshipHIGH_pair7SIBLINGSseqREL, echo = TRUE}
+
+#M043615
+kas[rownames(kas) == "M043615", colnames(kas) == "M043616"] # not related
+kas[rownames(kas) == "M043615", colnames(kas) == "M043617"] # not related
+kas[rownames(kas) == "M043615", colnames(kas) == "M043618"] # not related
+kas[rownames(kas) == "M043615", colnames(kas) == "M043619"] # not related
+kas[rownames(kas) == "M043615", colnames(kas) == "M043620"] # not related
+#M043615 NOT related to anyone, weird
+
+#M043616 (= M043620)
+kas[rownames(kas) == "M043616", colnames(kas) == "M043615"] # not related
+kas[rownames(kas) == "M043616", colnames(kas) == "M043617"] # related
+kas[rownames(kas) == "M043616", colnames(kas) == "M043618"] # related
+kas[rownames(kas) == "M043616", colnames(kas) == "M043619"] # related
+kas[rownames(kas) == "M043616", colnames(kas) == "M043620"] # same individual
+#M043616 related to everyone except 15
+
+#M043617
+kas[rownames(kas) == "M043617", colnames(kas) == "M043615"] # not related
+kas[rownames(kas) == "M043617", colnames(kas) == "M043616"] # related
+kas[rownames(kas) == "M043617", colnames(kas) == "M043618"] # related
+kas[rownames(kas) == "M043617", colnames(kas) == "M043619"] # related
+kas[rownames(kas) == "M043617", colnames(kas) == "M043620"] # related
+#M043617 related to everyone except 15
+
+#M043618
+kas[rownames(kas) == "M043618", colnames(kas) == "M043615"] # not related
+kas[rownames(kas) == "M043618", colnames(kas) == "M043616"] # related
+kas[rownames(kas) == "M043618", colnames(kas) == "M043617"] # related
+kas[rownames(kas) == "M043618", colnames(kas) == "M043619"] # related
+kas[rownames(kas) == "M043618", colnames(kas) == "M043620"] # related
+#M043618 related to everyone except 15
+
+
+#M043619
+kas[rownames(kas) == "M043619", colnames(kas) == "M043615"] # not related
+kas[rownames(kas) == "M043619", colnames(kas) == "M043616"] # related
+kas[rownames(kas) == "M043619", colnames(kas) == "M043617"] # related
+kas[rownames(kas) == "M043619", colnames(kas) == "M043618"] # related
+kas[rownames(kas) == "M043619", colnames(kas) == "M043620"] # related
+#M043619 related to everyone except 15
+
+#M043620 (= M043616)
+kas[rownames(kas) == "M043620", colnames(kas) == "M043615"] # not related
+kas[rownames(kas) == "M043620", colnames(kas) == "M043616"] # same individual
+kas[rownames(kas) == "M043620", colnames(kas) == "M043617"] # related
+kas[rownames(kas) == "M043620", colnames(kas) == "M043618"] # related
+kas[rownames(kas) == "M043620", colnames(kas) == "M043619"] # related
+#M043620 related to everyone except 15
+
+```
+
+Okay so we have a weird pattern here: M043617 is clustering with the wrong clutch ... It should be related to M043615 but it is not. We also sequenced the parents of both clutches: M038321 and M038012 are the parents of clutch 2011 and M027838 and M036843 are the parents of clutch 2014. Let's check the kinship within both clutches:
+
+```{r ASkinshipHIGH_pair7SIBLINGSseqPAR, echo = TRUE}
+
+
+#We also sequenced the parents: "M038321","M038012","M027838","M036843"
+
+#subset family matrix
+kASweirdFam = kas[rownames(kas) %in% c("M038321","M038012","M043615","M043617","M027838",
+                                       "M036843","M043616","M043618","M043619","M043620"),
+                  colnames(kas) %in% c("M038321","M038012","M043615","M043617","M027838",
+                                       "M036843","M043616","M043618","M043619","M043620")]
+
+#If we look at this family plot
+corrplot(kASweirdFam, method = "color", addCoef.col = "black")
+
+```
+
+Okay so first, we notice that both parents from clutch 2011: M038321 and M038012 are related (genomic kinship around 0.25). Let's see what the pedigree says about this: 
+
+```{r ASkinshipHIGH_pair7SIBLINGSseqPAR2, echo = TRUE}
+
+ped[ped$animal == "M038321",]
+ped[ped$animal == "M038012",]
+
+```
+
+They are mother and offspring. So the kinship value makes sense it also makes sense that their offspring: M043615 has a high kinship (higher than 0.25) with both of them and a very high self-kinship. So we think we can be confident about these samples being correct: we'll keep the three of them. However, M043617 does not correlate with this family (we saw that with M043615 before but it does not correlate as it should with the supposed parents either) but with clutch 2014 family. We cannot know which of the clutch 2014 kids M043617 really is so we'll just remove this sample.
+
+We also see with the correlation plot that both M043616 and M043620 correlate with the 2014 clutch family suggesting that they both are M043616 (because both their kinship match the expected kinship of M043616). So we'll also remove sample M043620 but we'll keep M043616.
+
+### pair 8
+
+The eight pair are individuals `r {rownames(kas)[WeirdgenKin[8,][1]]}` and `r {colnames(kas)[WeirdgenKin[8,][2]]}` with a kinship of `r {round(kas[WeirdgenKin[8,][1],WeirdgenKin[8,][2]], digits = 3)}`.
+
+```{r ASkinshipHIGH_pair8, echo = TRUE}
+
+#what is the genomic kinship
+kas[WeirdgenKin[8,][1],WeirdgenKin[8,][2]]
+
+#pedigree kinship
+BetaPEDsuborder[WeirdgenKin[8,][1],WeirdgenKin[8,][2]]
+
+#subset family matrix
+kASweirdFam = kas[rownames(kas) %in% c(WeirdgenKinnames[8,][1], WeirdgenKinnames[8,][2]),
+                  colnames(kas) %in% c(WeirdgenKinnames[8,][1], WeirdgenKinnames[8,][2])]
+
+#If we look at this family plot
+corrplot(kASweirdFam, method = "color", addCoef.col = "black")
+
+#parents of both individuals
+ped[ped$animal == "M037798",]
+ped[ped$animal == "M032181",]
+
+```
+
+These two individuals are father and offspring and have a genomic kinship which is higher than the expected pedigree kinship ! The observed genomic kinship is around 0.4 which would indicate that there is some inbreeding going on. However we don't know the father's parents so the pedigree kinship is probably missing some links (and the father is somehow related to the mother). We'll keep both individuals assuming that the pedigree is lacking information here !
+
+### pair 9
+
+Finally, the ninth pair are individuals `r {rownames(kas)[WeirdgenKin[9,][1]]}` and `r {colnames(kas)[WeirdgenKin[9,][2]]}` with a kinship of `r {round(kas[WeirdgenKin[9,][1],WeirdgenKin[9,][2]], digits = 3)}`.
+
+```{r ASkinshipHIGH_pair9, echo = TRUE}
+
+#what is the genomic kinship
+kas[WeirdgenKin[9,][1],WeirdgenKin[9,][2]]
+
+#pedigree kinship
+BetaPEDsuborder[WeirdgenKin[9,][1],WeirdgenKin[9,][2]]
+
+#subset family matrix
+kASweirdFam = kas[rownames(kas) %in% c(WeirdgenKinnames[9,][1], WeirdgenKinnames[9,][2]),
+                  colnames(kas) %in% c(WeirdgenKinnames[9,][1], WeirdgenKinnames[9,][2])]
+
+#If we look at this family plot
+corrplot(kASweirdFam, method = "color", addCoef.col = "black")
+
+#parents of both individuals
+ped[ped$animal == "M038425",]
+ped[ped$animal == "M038424",]
+
+```
+
+These two individuals are siblings and similarly to what we observed with he previous pair, we have a genomic kinship (around 0.4) higher than the pedigree kinship (0.25). We can now check the parents of their parents:
+
+```{r ASkinshipHIGH_pair9PAR, echo = TRUE}
+
+#check parents pedigree
+ped[ped$animal == "M027966",]
+ped[ped$animal == "M027970",]
+
+```
+
+Since we don't know both parents' parents we can assume that the pedigree is once again missing some link and that the genomic kinship is correct. We'll keep both of these individuals.
+
+
+## Pedigree kinship more than 0.16 higher than genomic kinship
+
+Now we'll investigate the pairs for which the difference between pedigree and genomic kinship is too big (> 0.16).
+
+```{r BedhigherthanAS, echo = TRUE}
+
+#pass diagonal and upper tree of difference to NA
+diag(diff_kin) = NA
+diff_kin[upper.tri(diff_kin)] = NA
+
+#Create df with difference, indv names etc.
+high <- as.data.frame(which(diff_kin > 0.16, arr.ind=T))
+rownames(high) <- NULL
+high$dif<- NA
+high$p <- NA
+high$b <- NA
+
+#Loop through difference to add indv RingId
+for(i in 1:nrow(high)){
+high$dif[i] <- diff_kin[high$row[i],high$col[i]]
+high$p[i] <- kas[high$row[i],high$col[i]]
+high$b[i] <- BetaPEDsuborder[high$row[i],high$col[i]]
+}
+
+#Set row.names and col.names
+high$RingId1 <- row.names(diff_kin)[high$row]
+high$RingId2 <- colnames(diff_kin)[high$col]
+
+#How many individuals are concerned
+length(unique(c(high$row,high$col)))
+
+#high object structure
+str(high)
+
+```
+
+### group 1
+
+The first three rows are three siblings `r {high$RingId1[1]}`, `r {high$RingId1[2]}` and `r {high$RingId1[3]}` and their father: `r {high$RingId2[1]}`. Their genomic kinship (with the father) are close to 0: `r {round(kas[high$row[1],high$col[1]], digits = 3)}`, `r {round(kas[high$row[2],high$col[2]], digits = 3)}` and `r {round(kas[high$row[3],high$col[3]], digits = 3)}` and the pedigree kinship is `r {round(BetaPEDsuborder[high$row[3],high$col[3]], digits = 3)}`.
+
+```{r BedhigherthanAS_pair1, echo = TRUE}
+
+#what is the genomic kinship
+kas[high$row[1],high$col[1]]
+kas[high$row[2],high$col[2]]
+kas[high$row[3],high$col[3]]
+
+#pedigree kinship
+BetaPEDsuborder[high$row[1],high$col[1]]
+BetaPEDsuborder[high$row[2],high$col[2]]
+BetaPEDsuborder[high$row[3],high$col[3]]
+
+```
+
+Let's see who their mom is and check what genomic kinship they have with her:
+
+```{r BedhigherthanAS_pair1PAR, echo = TRUE}
+
+#parents of the three siblings individuals
+ped[ped$animal == high$RingId1[1],]
+ped[ped$animal == high$RingId1[2],]
+ped[ped$animal == high$RingId1[3],]
+
+#kinship with their mom:
+kas[colnames(kas) == "M026819", rownames(kas) == "M026255"]
+kas[colnames(kas) == "M026821", rownames(kas) == "M026255"]
+kas[colnames(kas) == "M026823", rownames(kas) == "M026255"]
+
+corrplot(kas[rownames(kas) %in% c(high$RingId1[1], high$RingId1[2], high$RingId1[3],
+                                  high$RingId2[1], "M026255"),
+             colnames(kas) %in% c(high$RingId1[1], high$RingId1[2], high$RingId1[3],
+                                  high$RingId2[1], "M026255")],
+         method = "color", addCoef.col = "black")
+
+```
+
+The kinship with their father is wrong but the kinship with their mom is correct. So we have two possible explanations here: i) the pedigree is wrong and that guy is not their father; ii) we mislabeled the father tube and sequenced someone else. To check this we will 1) see if anyone else among the individuals we sequenced has a genomic kinship with the three siblings close to 0.25 like their father should; 2) we'll see if the father has any siblings which could confirm his identity.
+
+1) who in our data set has a genomic kinship above 0.16 with the kids and could be the father ?
+
+```{r BedhigherthanAS_pair1findDad, echo = TRUE}
+
+#who has a high genomic kinship with one of the kids
+row.names(kas)[which(kas[high$row[1],] > 0.16)]
+
+#correlation plot
+corrplot(kas[rownames(kas) %in% c(high$RingId1[1], high$RingId1[2], high$RingId1[3],
+                                  "M026616","M026255"),
+             colnames(kas) %in% c(high$RingId1[1], high$RingId1[2], high$RingId1[3],
+                                  "M026616", "M026255")],
+         method = "color", addCoef.col = "black")
+
+```
+
+We have the three siblings, the mother and one extra individual which could be the dad (kinship close to 0.25 with the three siblings). According to the database, this potential dad was not seen reproducing with any other females that year.
+
+
+2) Now about the expected father and it's relatives: we first search for his parents IDs.
+
+```{r BedhigherthanAS_pair1FATHER, echo = TRUE}
+
+#Father's parent
+ped[ped$animal == high$RingId2[1],]
+
+```
+
+We don't know his parents but in the database, we can see if any other bird comes from the same clutch !
+
+```{r BedhigherthanAS_pair1FATHER2, echo = TRUE}
+
+#Father's clutch id
+birds$BornClutchId[birds$RingId == "M006413"]
+
+
+```
+
+We don't know which clutch it was born in, so we'll see if he has any links with some other birds we sequenced:
+
+```{r BedhigherthanAS_pair1FATHER3, echo = TRUE}
+
+#Who is related to him
+row.names(kas)[which(kas[high$col[2],] > 0.16)] #many links
+
+#genomic kinship with these guys
+corrplot(kas[which(kas[high$col[2],] > 0.16),
+             which(kas[high$col[2],] > 0.16)],
+         method = "color", addCoef.col = "black", number.cex = .7)
+
+#who are they ?
+ped[ped$animal == "M017312",] #we don't know
+ped[ped$animal == "M022861",] #kid
+ped[ped$animal == "M032120",] #grand-kid
+ped[ped$animal == "M022863",] #kid
+ped[ped$animal == "M022864",] #kid
+ped[ped$animal == "M026547",] #kid
+ped[ped$animal == "M026548",] #kid
+ped[ped$animal == "M026790",] #kid
+ped[ped$animal == "M026792",] #kid
+ped[ped$animal == "M026793",] #kid
+ped[ped$animal == "M026848",] #kid
+ped[ped$animal == "M032001",] #kid
+ped[ped$animal == "M032450",] #grand-kid
+
+
+
+```
+
+He has many links and they match the pedigree: they are either his kids or grand-kids from other clutches. So from this, we know that the individual we sequenced is indeed `r {high$RingId2[1]}`, he's just not the father of `r {high$RingId1[1]}`, `r {high$RingId1[2]}` and `r {high$RingId1[3]}` ! So we'll just keep all the samples and fix the pedigree !
+
+### group 2
+
+The next group is composed of one individual `r {high$RingId2[4]}` and it's parents: `r {high$RingId1[4]}` and `r {high$RingId1[5]}` which apparently are not his parents. The parents' genomic kinship with their kid are close to 0: `r {round(kas[high$row[4],high$col[4]], digits = 3)}` and `r {round(kas[high$row[5],high$col[5]], digits = 3)}` but the pedigree kinship is `r {round(BetaPEDsuborder[high$row[4],high$col[4]], digits = 3)}`.
+
+```{r BedhigherthanAS_pair2, echo = TRUE}
+
+#what is the genomic kinship
+kas[high$row[4],high$col[4]]
+kas[high$row[5],high$col[5]]
+
+#pedigree kinship
+BetaPEDsuborder[high$row[4],high$col[4]]
+BetaPEDsuborder[high$row[5],high$col[5]]
+
+#parents of the three siblings individuals
+ped[ped$animal == high$RingId2[4],]
+
+```
+
+We'll first look for other kids from the same parents which (in theory) should be siblings of `r {high$RingId2[4]}`:
+
+```{r BedhigherthanAS_pair2sib, echo = TRUE}
+
+#Any siblings ?
+ped$animal[(ped$sire == "M011878") & (ped$dam == "M011181") &
+             (!is.na(ped$sire)) & (!is.na(ped$dam))]
+
+#Did we sequence them ?
+"M011257" %in% rownames(kas)
+"M011258" %in% rownames(kas)
+"M011259" %in% rownames(kas)
+"M011260" %in% rownames(kas)
+
+```
+
+We did not sequenced any of his siblings, but does this individual have kids ?
+
+```{r BedhigherthanAS_pair2kids, echo = TRUE}
+
+#does he has kids ?
+ped[ped$sire=='M011827' & !is.na(ped$sire),]
+
+#Did we sequence them ?
+"M011409" %in% rownames(kas)
+"M022035" %in% rownames(kas)
+"M022037" %in% rownames(kas)
+"M022039" %in% rownames(kas)
+"M022691" %in% rownames(kas)
+"M022694" %in% rownames(kas)
+"M022753" %in% rownames(kas)
+"M026044" %in% rownames(kas)
+"M026301" %in% rownames(kas)
+"M026302" %in% rownames(kas)
+"M026303" %in% rownames(kas)
+"M026354" %in% rownames(kas)
+"M026355" %in% rownames(kas)
+"M026356" %in% rownames(kas)
+"M026383" %in% rownames(kas)
+"M026384" %in% rownames(kas)
+"M026385" %in% rownames(kas)
+
+```
+
+We sequenced some of his kids so let's see if their genomic kinship matches the expected pedigree kinship with him. if it does, then we sequenced the correct individual, but the pedigree was wrong about it's parents. If it does not, it means that we did not sequence the correct individual.
+
+```{r BedhigherthanAS_pair2kidskin, echo = TRUE}
+
+#genomic kinship with these guys
+corrplot(kas[rownames(kas) %in% c("M022039","M022694","M026301",
+                                  "M026383","M026385"),
+             colnames(kas) %in% c("M022039","M022694","M026301",
+                                  "M026383","M026385")],
+         method = "color", addCoef.col = "black")
+
+```
+That guy really is the father of all these kids (M022039 has lower genomic kinship with the rest of the siblings because he has a different mother). So we can be sure we sequenced the correct individual. We'll keep that sample and set both his parents to NA in the pedigree !
+
+
+### group 3
+
+The next group is composed of two individuals `r {high$RingId2[6]}` and `r {high$RingId1[6]}` with genomic kinship `r {round(kas[high$row[6],high$col[6]], digits = 3)}` but a pedigree kinship of `r {round(BetaPEDsuborder[high$row[6],high$col[6]], digits = 3)}`. It's supposed to be a father and his son but they are unrelated!
+
+```{r BedhigherthanAS_pair3, echo = TRUE}
+
+#what is the genomic kinship
+kas[high$row[6],high$col[6]]
+
+#pedigree kinship
+BetaPEDsuborder[high$row[6],high$col[6]]
+
+```
+
+We'll first identify who is the mother and whether there are other kids in this clutch we sequenced:
+
+```{r BedhigherthanAS_pair3fam, echo = TRUE}
+
+#who is the mother ?
+ped[ped$animal == high$RingId2[6],]
+
+#Any siblings ?
+ped$animal[(ped$sire == "M012646") & (ped$dam == "M011725") &
+             (!is.na(ped$sire)) & (!is.na(ped$dam))]
+
+#Did we sequence them ?
+"M022382" %in% rownames(kas)
+"M022384" %in% rownames(kas)
+"M022759" %in% rownames(kas)
+
+```
+
+Unfortunately we did not sequenced any of the other siblings from this clutch. We'll now try to see if individual `r {high$RingId2[6]}` is related to anyone in the data set and where these guys come from!
+
+```{r BedhigherthanAS_pair3kids, echo = TRUE}
+
+#who is related ?
+row.names(kas)[which(kas[high$col[6],] > 0.16)]
+
+#who are these guys ?
+ped[ped$animal == "M022385",]
+ped[ped$animal == "M026267",]
+
+#Which clutch are they coming from ?
+birds$BornClutchId[birds$RingId == "M022385"]
+birds$BornClutchId[birds$RingId == "M026267"]
+
+```
+
+
+We don't know their parents or which clutch they come from. They might be his true parents because they were seen as adults this year but we really cannot be sure.
+
+Now what about the father, anyone related to him in our data set ?
+
+```{r BedhigherthanAS_pair3dad, echo = TRUE}
+
+#parents ?
+ped[ped$animal == high$RingId1[6],]
+
+#who is related ?
+row.names(kas)[which(kas[high$row[6],] > 0.16)]
+
+#who is that guy ?
+ped[ped$animal == "M022859",]
+
+```
+
+We found one individual but from the pedigree we cannot know what is their relationship ...
+
+It seems to be a complicated case, we'll come back to this later, for now we will remove both guys !
+
+### group 4
+
+The next rows are one individual `r {high$RingId2[7]}` and all his supposed kids `r {high$RingId1[7]}`, `r {high$RingId1[8]}`, `r {high$RingId1[9]}`, `r {high$RingId1[10]}`, `r {high$RingId1[11]}`. But from the genomic kinship we can be sure that he's not the dad.
+
+```{r BedhigherthanAS_pair4, echo = TRUE}
+
+#what is the genomic kinship
+corrplot(kas[c(high$col[7], high$row[7:11]),
+             c(high$col[7], high$row[7:11])],
+         method = "color", addCoef.col = "black")
+
+#pedigree kinship /what it should look like)
+corrplot(BetaPEDsuborder[c(high$col[7],high$row[7:11]),
+             c(high$col[7],high$row[7:11])],
+         method = "color", addCoef.col = "black")
+
+#Who is the mom ?
+ped[ped$animal == high$RingId1[7],]
+
+#kinship of the kids with the mom:
+corrplot(kas[rownames(kas) %in% c("M026985", high$RingId2[7], high$RingId1[7:11]),
+             colnames(kas) %in% c("M026985", high$RingId2[7], high$RingId1[7:11])],
+         method = "color", addCoef.col = "black")
+
+```
+
+So the kids are indeed related (among themselves and with their mom). So either 1) he's just not the father, or 2) we mislabeled the father's tube) !
+
+We know that this guy (`r {high$RingId2[7]}`) is supposed to have other kids (from different clutches) so let's see if 1) some individuals are related to him, 2) his genomic kinship matches the pedigree kinship from other kids he fathered:
+
+```{r BedhigherthanAS_pair4kids, echo = TRUE}
+
+#who is related to this guy?
+row.names(kas)[which(kas[high$col[7],] > 0.16)]
+
+#bunch of kids
+ped[ped$animal == "M022875",] #kid
+ped[ped$animal == "M022870",] #kid
+ped[ped$animal == "M022871",] #kid
+ped[ped$animal == "M022872",] #kid
+ped[ped$animal == "M022873",] #kid
+ped[ped$animal == "M022876",] #kid
+ped[ped$animal == "M022899",] #kid
+ped[ped$animal == "M026834",] #We don't know but father ID is missing
+ped[ped$animal == "M026836",] #We don't know but father ID is missing
+ped[ped$animal == "M026837",] #We don't know but father ID is missing
+ped[ped$animal == "M032031",] #We don't know but father ID is missing
+ped[ped$animal == "M032378",] #kid
+ped[ped$animal == "M032379",] #kid
+
+```
+
+This is interesting, for a bunch of the related individuals, he is labelled as the father, but for four of them, we did not know who was the father (when we recorded the pedigree). For the kids we knew he was the father, does the genomic kinship matches the expected pedigree kinship (0.25)?
+  
+```{r BedhigherthanAS_pair4kids2, echo = TRUE}
+
+corrplot(kas[rownames(kas) %in% c("M022875","M022870","M022871","M022872",
+                                  "M022873","M022876","M032378","M032379"),
+             colnames(kas) %in% c("M022875","M022870","M022871","M022872",
+                                  "M022873","M022876","M032378","M032379")],
+                  method = "color", addCoef.col = "black")
+
+```
+
+Yes it matches! Since this guy is the father of other kids and the pedigree and genomic kinship matches, we can say that it is not a labeling problem, he's just not the father of the clutch we were studying! We can also add him as a father from the rest of the kids which were related to him but for which the father was unknown!
+
+Then for the clutch we were initially studying, who's the father? We'll start by looking for related individuals with one of the kids of the clutch:
+
+```{r BedhigherthanAS_pair4dad, echo = TRUE}
+
+#who is related to the kids ?
+row.names(kas)[which(kas[high$row[7],] > 0.16)]
+
+#bunch of kids
+ped[ped$animal == "M026985",] # That's the mom
+ped[ped$animal == "M022873",] # sibling same "wrong" father
+ped[ped$animal == "M032289",] # offspring
+ped[ped$animal == "M032463",] # offspring
+ped[ped$animal == "M032464",] # offspring
+ped[ped$animal == "M032465",] # offspring
+ped[ped$animal == "M032466",] # offspring
+ped[ped$animal == "M032495",] # offspring
+ped[ped$animal == "M032496",] # offspring
+ped[ped$animal == "M032497",] # offspring
+ped[ped$animal == "M032498",] # offspring
+ped[ped$animal == "M032500",] # offspring
+
+```
+
+The only individuals which came out as related to the kid were one sibling and his offspring. This sibling (M022873) has the same parents but did not come out as weird when we identified samples with large discrepancies between pedigree and genomic kinship. So this is  weird, let's check what his kinship with the "dad" (M032002) is:
+
+```{r BedhigherthanAS_pair4sib, echo = TRUE}
+
+#genomic kinship with the "dad"?
+kas[rownames(kas) == "M022873", colnames(kas) == "M032002"]
+
+```
+
+The genomic kinship is around 0.25 indicating that M032002 probably is the dad of this individual. We'll check whether him (M022873) and the other kids (`r {high$RingId1[7:11]}`) are from the same clutch. if there are not, them we'll just assume that the father was wrongly identified for one clutch but was correct for the other. If they are from the same clutch, it means that we failed to document some cross-fostering events:
+
+```{r BedhigherthanAS_pair4sib2, echo = TRUE}
+
+birds$BornClutchId[birds$RingId == "M022873"]
+birds$BornClutchId[birds$RingId == "M026816"]
+
+```
+
+They're not from the same clutch! We'll keep all individuals, we'll just correct the pedigree: remove M032002 as a father of clutch 1389 and add him as the father of the other clutch! We could not identify the true father of clutch 1389, we'll just leave it as NA.K
+
+### group 5
+
+The next rows are one individual `r {high$RingId1[15]}` and many individuals: `r {high$RingId2[15]}`: his supposed dad; `r {high$RingId2[23]}`: his supposed mom; and many supposed siblings : `r {high$RingId1[25:32]}` and `r {high$RingId2[24]}`. We'll start by visualizing the genomic kinship matrix of this family:
+
+```{r BedhigherthanAS_pair5, echo = TRUE}
+
+#family
+listofFAM = c(high$RingId1[15], high$RingId2[15], high$RingId2[23],
+              high$RingId1[25:32], high$RingId2[24])
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black', number.cex = .75)
+
+```
+
+This guy (`r {high$RingId1[15]}`) is indeed unrelated to all his supposed family. But can we find individuals he is related to (and should not be according for pedigree):
+
+```{r BedhigherthanAS_pair52, echo = TRUE}
+
+#Who is he related to?
+row.names(kas)[which(kas[high$row[15],] > 0.16)]
+
+#What are the relatedness with these guys
+
+#pedigree
+BetaPEDsuborder[rownames(BetaPEDsuborder) %in% c("M011685","M011817"),
+                colnames(BetaPEDsuborder) %in% c("M026400")]
+
+#genomic
+corrplot(kas[rownames(kas) %in% c("M011685","M011817","M026400"),
+             colnames(kas) %in%  c("M011685","M011817","M026400")],
+         method = 'color',addCoef.col = 'black')
+
+#Do these individuals have other kids ?
+ped$animal[(ped$sire == "M011685") & (ped$dam == "M011817") &
+             (!is.na(ped$sire)) & (!is.na(ped$dam))]
+
+#Did we sequence them ?
+"M022398" %in% rownames(kas)
+"M022400" %in% rownames(kas)
+"M026002" %in% rownames(kas)
+"M026004" %in% rownames(kas)
+"M026006" %in% rownames(kas)
+"M026008" %in% rownames(kas)
+
+```
+
+We found two individuals which might be his parents, especially since they have other kids with similar names (could be a typo when we wrote the names). Unfortunately we did not sequence any of their kids so we'll just have to remove individual `r {high$RingId1[15]}` from our dataset.
+
+### group 6
+
+The next group is composed of `r {high$RingId1[12]}` and three individuals: his supposed dad: `r {high$RingId2[12]}` and two of his supposed siblings: `r {high$RingId1[43]}` and `r {high$RingId1[44]}`. We'll start by looking at their genomic kinship:
+
+```{r BedhigherthanAS_pair6, echo = TRUE}
+
+#family link
+listofFAM = c(high$RingId1[12], high$RingId2[12], high$RingId1[43], high$RingId1[44])
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+Individual `r {high$RingId1[12]}` is not related to his supposed father but his somewhat related to his supposed siblings: genomic kinship close to 0.1, which is larger than 0 (expected between unrelated) but lower than 0.25 (expected between siblings). The other siblings on he other hand seem to be the offspring of the dad (genomic kinship close to 0.25). What about the mom ?
+
+```{r BedhigherthanAS_pair6mom, echo = TRUE}
+
+#What about his mom ?
+ped[ped$animal == "M031719",]
+
+listofFAM = c(high$RingId1[12], high$RingId2[12], high$RingId1[43],
+              high$RingId1[44], "M028838")
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+```
+
+There is no problem with the mom kinship: she has a genomic kinship close to 0.25 with the three of the kids! It seems that this kid (`r {high$RingId1[12]}`) is the kid of the mom but not the dad. He's then half-sibling with the two others kids. We'll first check that he does not come from the same clutch (it would be weird if he did).
+
+
+```{r BedhigherthanAS_pair6clutch, echo = TRUE}
+
+#same clutch ?
+birds$BornClutchId[birds$RingId == "M031719"]
+birds$BornClutchId[birds$RingId == "M037505"]
+birds$BornClutchId[birds$RingId == "M037507"]
+
+```
+
+he does not come from the same clutch (good)! Now we'll then see if we can identify his true dad ?
+
+```{r BedhigherthanAS_pair6dad, echo = TRUE}
+
+#If we look for new links for this individuals 
+row.names(kas)[which(kas[high$row[12],] > 0.16)]
+
+
+```
+
+Other than the mom and himself, one extra individual pops up, it is probably the dad. We will keep all samples and fix the pedigree.
+
+### group 7
+
+The next group is composed of one individual `r {high$RingId1[13]}` and five individuals: `r {high$RingId2[50]}`, `r {high$RingId2[13]}`, `r {high$RingId2[68]}`, `r {high$RingId2[69]}` and `r {high$RingId2[70]}`. These individuals should have a kinship of 0.25 (according to pedigree) but their genomic kinship are lower.
+
+```{r BedhigherthanAS_pair7, echo = TRUE}
+
+listofFAM = c(high$RingId1[13], high$RingId2[13], high$RingId1[68],
+              high$RingId1[69], high$RingId1[70], high$RingId2[50])
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+From this correlation plot, we can see that this guy has a weird self kinship (`r {round(kas[high$row[13],high$row[13]], digits = 3)}`) which could explain the lower kinship with the rest of his family... Anyway it's weird and might indicate that we cannot trust the genomic data of this individual so we'll just remove him.
+
+### group 8
+
+The group is composed of two individuals: a dad: `r {high$RingId2[14]}` and it's supposed kid: `r {high$RingId1[14]}`. The pedigree kinship is 0.25 but the genetic kinship are close to 0 which indicates that some link is wrong. let's first check the genomic kinship.
+
+```{r BedhigherthanAS_pair8, echo = TRUE}
+
+#individuals in this family
+listofFAM = c(high$RingId2[14], high$RingId1[14])
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+The dad (`r {high$RingId2[14]}`) is not related to this particular kid in this clutch. We'll first see if this clutch contained any other kids and if we sequenced them:
+
+
+```{r BedhigherthanAS_pair8kids, echo = TRUE}
+
+#other kids ?
+ped[(ped$sire == high$RingId2[14]) & (!is.na(ped$sire)),]
+
+#Yes, did we sequenced the kids ?
+"M005680" %in% colnames(kas)
+"M005681" %in% colnames(kas)
+"M005682" %in% colnames(kas)
+"M005683" %in% colnames(kas)
+"M011182" %in% colnames(kas)
+"M011194" %in% colnames(kas)
+"M011302" %in% colnames(kas)
+"M011303" %in% colnames(kas)
+"M011713" %in% colnames(kas)
+"M011715" %in% colnames(kas)
+"M011995" %in% colnames(kas)
+
+```
+
+Fortunately, we did sequence one of them: M011995. We'll now check his genomic kinship with both the dad (`r {high$RingId2[14]}`) and the kid (`r {high$RingId1[14]}`). We will also investigate the mom: did we sequenced her and what is her genomic kinship with the kid?
+
+```{r BedhigherthanAS_pair8mom, echo = TRUE}
+
+#Did we sequenced the mom ?
+"M000376" %in% colnames(kas)
+#We did not sequence her
+
+#What about the other sibling ?
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% c("M011995",listofFAM), 
+                     row.names(kas) %in% c("M011995",listofFAM)]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+We did not sequence the mom and the other kid we sequenced (M011995) has a genomic kinship with the dad (M005093) close to 0.25 suggesting that their relation is correct. So we don't have any other choice but to remove the first kid (M011301) from our data set. He (M011301) seems to be a half-sibling with his supposed sibling (M011995): the genomic kinship is around 0.15 but we cannot know who he really is. Since the dad kinship with the second kid (M011995) was correct, we'll keep him in the data set.
+
+### group 9
+
+The next group is composed of five individuals: a dad: `r {high$RingId2[16]}` and it's supposed four kids: `r {high$RingId1[16:19]}`. The pedigree kinship is 0.25 but the genetic kinship are close to 0 which indicates that some link is wrong. let's first check the genomic kinship.
+
+```{r BedhigherthanAS_pair9, echo = TRUE}
+
+#individuals in this family
+listofFAM = c(high$RingId2[16], high$RingId1[16:19])
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+The dad (`r {high$RingId2[16]}`) is not related to any of the kids in this clutch. So either he is not the dad, or we did not sequence the correct individual. To check for this, we'll see if this individual (`r {high$RingId2[16]}`) has any other kids or siblings and if we sequenced them:
+
+```{r BedhigherthanAS_pair9dad, echo = TRUE}
+
+#other kids ?
+ped[(ped$sire == high$RingId2[16]) & (!is.na(ped$sire)),]
+#no
+
+#Who are his parents ?
+ped[ped$animal == high$RingId2[16],]
+
+#Does he have siblings ?
+ped[(ped$sire == "M001670") & (ped$dam == "898630") &
+      (!is.na(ped$sire)) & (!is.na(ped$dam)),]
+
+#Did we sequence them ??
+"M022028" %in% rownames(kas)
+"M022029" %in% rownames(kas)
+"M022030" %in% rownames(kas)
+"M022031" %in% rownames(kas)
+"M022032" %in% rownames(kas)
+"M022095" %in% rownames(kas)
+"M022096" %in% rownames(kas) #YES
+"M022097" %in% rownames(kas)
+"M022098" %in% rownames(kas) #YES
+"M022100" %in% rownames(kas) #YES
+
+```
+
+We sequenced three of his siblings, now we just need to check it's genomic kinship with both parents and siblings and see it it matches the expected values:
+
+```{r BedhigherthanAS_pair9dad2, echo = TRUE}
+
+#Check relatedness
+corrplot(as.matrix(kas[row.names(kas) %in% c("M022672", "M001670", "898630",
+                                                  "M022096", "M022098", "M022100"), 
+                     row.names(kas) %in% c("M022672", "M001670", "898630",
+                                                  "M022096", "M022098", "M022100")]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+The genomic kinship looks good (it matches the expected kinship around 0.25). So it is not a individual problem, he's just not the father ! We'll keep this guy but try to correct the pedigree by looking for the real father:
+
+```{r BedhigherthanAS_pair9truedad, echo = TRUE}
+
+listofFAM = c(high$RingId1[16:19])
+
+#check for related individuals for the first kid
+row.names(kas)[which(kas[high$row[16],] > 0.16)]
+
+#correlation plot
+corrplot(kas[which(kas[high$row[16],] > 0.16),
+             which(kas[high$row[16],] > 0.16)],
+         method = 'color',addCoef.col = 'black', number.cex = .7)
+
+
+```
+
+Ok so this group of individual is mess but we have (in the upper left triangle of the matrix) one inbred family: M022673 is the dad of three inbred kids: M032022, M032023 and M032024. It looks like he is also the dad of the initial clutch we were studying including kids: M031576, M031577, M031578 and M031579 as well as the dad of another clutch including kids: M031998, M031999, M032000. The "wrong" dad in the initial clutch we were studying had a RingId of M022672, one number away of the "true" dad we identified (M022673). We we believe that this is a typo problem and that we mis-typed the dad ID when registering the clutch into the database.
+
+So we kept all the individuals and the pedigree with new father ID: M022673.
+
+
+### group 10
+
+The next group contains four individual: one mom: `r {high$RingId1[20]}` and her three kids `r {high$RingId2[20:22]}`. As before, the pedigree kinship is 0.25 but the genetic kinship is close to zero indicating that the link is wrong. We'll start by looking at the genomic kinship matrix.
+
+```{r BedhigherthanAS_pair10, echo = TRUE}
+
+listofFAM = c(high$RingId1[20],high$RingId2[20:22])
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+Just like before, the female is not related to any of the three offspring, but the offspring are related among themselves, as siblings (close to 0.25). We are not sure if the individuals we sequenced is not who we think she is or if she's just not the mom. So we'll look for siblings of this female:
+
+```{r BedhigherthanAS_pair10Mom, echo = TRUE}
+
+#Who are his parents ?
+ped[ped$animal == high$RingId1[20],]
+
+```
+
+We don't know the parents so we cannot look for siblings. However, in the database, there is something about this clutch mentioning that the ring ID of the female was wrongly copied ... What it means is that the DNA we sequenced comes from the correct individual, she is just not the mother of this clutch. So we fixed the pedigree with correct mom ID: M038110.
+
+
+### group 11
+
+The next group is composed of individuals `r {high$RingId1[33]}` (kid) and it's mom: `r {high$RingId2[33]}`; dad: `r {high$RingId2[49]}` and three siblings: `r {high$RingId2[54]}`, `r {high$RingId2[55]}` and `r {high$RingId1[56]}`. The pedigree kinship is around 0.25 but the genetic kinship are close to 0 so once again, the link is wrong! As usual, we'll strat by checking the genomic kinship:
+
+```{r BedhigherthanAS_pair11, echo = TRUE}
+
+listofFAM = c(high$RingId1[c(33,56)],high$RingId2[c(33,49,54,55)])
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+So he's definitively not in the family ! But does he have new links with other individuals ?
+
+```{r BedhigherthanAS_pair11newlinks, echo = TRUE}
+
+#check for related individuals
+row.names(kas)[which(kas[high$row[33],] > 0.16)]
+
+#who are they
+ped[ped$animal == "M040503",]
+ped[ped$animal == "M040505",]
+
+#correlation plot
+corrplot(kas[rownames(kas) %in% c("M038031","M040503","M040505"),
+             colnames(kas) %in% c("M038031","M040503","M040505")],
+         method = 'color',addCoef.col = 'black')
+
+```
+
+We identified two individuals which are siblings and they have a genomic kinship around 0.25 with M038031. In fact, these two guys also have a "kinship problem" with their supposed mom (M038112): the pedigree kinship is around 0.25 but the genomic kinship is close to 0.
+
+```{r BedhigherthanAS_pair11newlinks2, echo = TRUE}
+
+#/!\ we print the DIFFERENCE in kinship between pedigree and genomic here
+diff_kin[rownames(diff_kin) %in% c("M040503","M040505","M038112"),
+         colnames(diff_kin) %in% c("M040503","M040505","M038112")]
+
+#correlation plot
+corrplot(kas[rownames(kas) %in% c("M040503","M040505","M038112"),
+             colnames(kas) %in% c("M040503","M040505","M038112")],
+         method = 'color',addCoef.col = 'black')
+
+```
+
+So we want to know whether there has been a sample swap between M038031 and M038112. We'll check if M038112 is related to the first family we were checking:
+
+```{r BedhigherthanAS_pair11newlinks3, echo = TRUE}
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% c("M038112",listofFAM), 
+                     row.names(kas) %in% c("M038112",listofFAM)]),
+         method = 'color',addCoef.col = 'black')
+
+#She is not related to the first family we were investigating
+# so it's NOT a tube swap ...
+
+```
+
+M038112 is not related to the first family either so it is not a tube/sample swap ... We'll try to look for individuals with whom M038112 is related and investigate who they are:
+
+```{r BedhigherthanAS_pair11newlinks4, echo = TRUE}
+
+#Who is she related to ?
+row.names(kas)[which(kas[high$col[59],] > 0.16)]
+
+#4 individuals, who are they ?
+ped[ped$animal == "M031557",]
+ped[ped$animal == "M031558",]
+ped[ped$animal == "M038033",]
+ped[ped$animal == "M038034",]
+
+corrplot(kas[rownames(kas) %in% c("M038112","M031557", "M031558",
+                                  "M038033", "M038034"),
+             colnames(kas) %in% c("M038112","M031557", "M031558",
+                                  "M038033", "M038034")],
+         method = 'color',addCoef.col = 'black')
+
+```
+
+M038112 is further related to two parents and two of their offspring. We will now look for additional members of this family and see whether we sequenced them:
+
+```{r BedhigherthanAS_pair11newlinks5, echo = TRUE}
+
+#Any one else in the family ?
+ped[(ped$sire == "M031558") & (ped$dam == "M031557") &
+      (!is.na(ped$sire)) & (!is.na(ped$dam)),]
+
+#five other siblings, did we sequence the ?
+"M037517" %in% rownames(kas)
+"M031704" %in% rownames(kas)
+"M038035" %in% rownames(kas)
+"M038036" %in% rownames(kas)
+"M038037" %in% rownames(kas)
+
+```
+
+We sequenced one extra offspring from this family: M038035. How does he correlate with the rest of his supposed family?
+
+```{r BedhigherthanAS_pair11newlinks6, echo = TRUE}
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% c("M031557","M031558","M038033",
+                                             "M038034","M038035"), 
+                     row.names(kas) %in% c("M031557","M031558","M038033",
+                                             "M038034","M038035")]),
+         method = 'color', addCoef.col = 'black')
+
+```
+
+This guy is not related to the family it should be related to! But what about the two previous families?
+
+```{r BedhigherthanAS_pair11newlinks7, echo = TRUE}
+
+#correlation plot first family (supposedly M038031 family):
+corrplot(as.matrix(kas[row.names(kas) %in% c("M038035",listofFAM), 
+                     row.names(kas) %in% c("M038035",listofFAM)]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+He's correlating with the first family (supposedly M038031 family ). So we beleive that it is a three samples swap: M038035 is M038031; M038112 is M038035 and M038031 is M038112! If we look at the "corrected" family correlation plots:
+
+```{r BedhigherthanAS_pair11newlinks8, echo = TRUE}
+
+#First family
+corrplot(as.matrix(kas[row.names(kas) %in% c("M038035","M038032","M028824",
+                                             "M032370","M038029","M038030"), 
+                     row.names(kas) %in% c("M038035","M038032","M028824",
+                                             "M032370","M038029","M038030")]),
+         method = 'color',addCoef.col = 'black')
+#good
+
+#Second family
+corrplot(as.matrix(kas[row.names(kas) %in% c("M040503","M040505","M038031","M028912"), 
+                     row.names(kas) %in% c("M040503","M040505","M038031","M028912")]),
+         method = 'color',addCoef.col = 'black')
+#good
+
+#Third family
+corrplot(as.matrix(kas[row.names(kas) %in% c("M038035","M038032","M028824",
+                                             "M032370","M038029","M038030"), 
+                     row.names(kas) %in% c("M038035","M038032","M028824",
+                                             "M032370","M038029","M038030")]),
+         method = 'color',addCoef.col = 'black')
+#good
+
+```
+
+So we conclude that this is a three samples swap: M038035 actually is M038031; M038112 actually is M038035 and M038031 actually is M038112. So we'll correct the individuals names in the VCF.
+
+### group 12
+
+The next group is composed of three individuals: a female: `r {high$RingId2[36]}` and her supposed dad: `r {high$RingId1[37]}` and sibling: `r {high$RingId1[36]}`. As usual, let's first check their genomic kinship:
+
+```{r BedhigherthanAS_pair12, echo = TRUE}
+
+listofFAM = c(high$RingId1[c(36,37)],high$RingId2[36])
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+`r {high$RingId2[36]}` is lowly related to her sibling (genomic kinship close to 0.1) and not related to her dad. Let's see if she is related to anyone else we sequenced:
+
+```{r BedhigherthanAS_pair12links, echo = TRUE}
+
+#Who is she related to ?
+row.names(kas)[which(kas[high$col[36],] > 0.16)]
+
+#parents ?
+ped[ped$animal == high$RingId2[36],]
+
+```
+
+She is related to another individual which is actually her mom (M032426). First she is not from the same clutch as her supposed sibling (`r {high$RingId1[36]}`) so it is possible that they don't have the same father. Well now add the mom and check relatedness:
+
+```{r BedhigherthanAS_pair12mom, echo = TRUE}
+
+listofFAM = c(high$RingId1[c(36,37)],high$RingId2[36], "M032426")
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+The mom is related to both of her offspring. We'll conclude that we sequenced the correct sample but that her dad was wrongly assigned and correct the pedigree.
+
+
+### group 13
+
+The next group is composed of six individuals: a female: `r {high$RingId2[38]}` and her supposed offspring: `r {high$RingId1[38:42]}`. Let's look at the genomic kinship:
+
+```{r BedhigherthanAS_pair13, echo = TRUE}
+
+listofFAM = c(high$RingId2[38],high$RingId1[38:42])
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+All the siblings are correctly related so we can be sure about them. Now, we need to check if the RingID corresponds to the one we sequenced. We'll check whether she (`r {high$RingId2[38]}`) has other links which could confirm her identity:
+
+```{r BedhigherthanAS_pair13links, echo = TRUE}
+
+#Who is she related to ?
+row.names(kas)[which(kas[high$col[38],] > 0.16)]
+
+#who are they =
+ped[ped$animal == "M031564",] #unknown
+ped[ped$animal == "M031811",] #kids
+ped[ped$animal == "M031812",] #kids
+ped[ped$animal == "M031813",] #kids
+
+```
+
+We identified three of her kids from another clutch! Let's check her kinship with them and if it's around 0.25 then we can conclude that she truly is who we think she is:
+
+```{r BedhigherthanAS_pair13kids, echo = TRUE}
+
+listofFAM = c(high$RingId2[38], "M031811", "M031812", "M031813")
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+Looks like she is correctly related to her other kids! Now who is the mother of the first clutch we were investigating? We'll try to find related individuals in the data: 
+
+```{r BedhigherthanAS_pair13mom, echo = TRUE}
+
+#Who is she related to ?
+row.names(kas)[which(kas[high$row[38],] > 0.16)]
+
+ped[ped$animal == "M031150",]
+ped[ped$animal == "M042765",]
+
+```
+
+We find the siblings plus two individuals: we'll see the genomic kinship matrix:
+
+```{r BedhigherthanAS_pair13new, echo = TRUE}
+
+listofFAM = c(high$RingId1[38:42], "M031150", "M042765")
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+M031150 might be the true mom; M042765 is related but not enough to be the a parent so we won't conclude anything about this individual. We can check whether we sequenced the dad of this clutch:
+
+```{r BedhigherthanAS_pair13dad, echo = TRUE}
+
+ped[ped$animal == high$RingId1[38],]
+
+```
+
+We don't even know who he is so there is really nothing more we can do. We'll just keep all the samples but correct the pedigree!
+
+### group 14
+
+The next group is composed of two individuals: a female: `r {high$RingId2[45]}` and her supposed kid: `r {high$RingId1[45]}`. Let's look at the genomic kinship:
+
+```{r BedhigherthanAS_pair14, echo = TRUE}
+
+listofFAM = c(high$RingId2[45], high$RingId1[45])
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+They're not related at all. Let's check if the mom truly is who we think she is. We'll see if the mom has other offspring, if we sequenced them and what their relatedness with her look like:
+
+```{r BedhigherthanAS_pair14mom, echo = TRUE}
+
+#pedigree
+ped[(ped$dam == high$RingId2[45]) & (!is.na(ped$dam)),]
+
+#Who are they ?
+"M031785" %in% rownames(kas) #yes
+"M031786" %in% rownames(kas) #yes
+"M031787" %in% rownames(kas) #yes
+"M031788" %in% rownames(kas) #yes
+"M031789" %in% rownames(kas) #yes
+"M031790" %in% rownames(kas) #yes
+"M031281" %in% rownames(kas) #no
+"M038048" %in% rownames(kas) #no
+"M038049" %in% rownames(kas) #no
+
+#correlation plot for the one we sequenced
+corrplot(kas[rownames(kas) %in% c("M031785","M031786","M031787","M031788",
+                                  "M031789","M031790", high$RingId2[45]),
+             colnames(kas) %in% c("M031785","M031786","M031787","M031788",
+                                  "M031789","M031790", high$RingId2[45])],
+         method = 'color',addCoef.col = 'black')
+
+```
+The mom had other offspring we sequenced and which has a relatedness with her around 0.25 so we can be confident that she is who we think she ism she's just not the mother of `r {high$RingId1[45]}`.
+
+Let's see if the kid (`r {high$RingId1[45]}`) has siblings or is related to anyone else which we could use to either confirm his identity of find his parents:
+
+```{r BedhigherthanAS_pair14kid, echo = TRUE}
+
+#pedigree
+ped[ped$animal == high$RingId1[45],]
+
+#new links ?
+row.names(kas)[which(kas[high$row[45],] > 0.16)]
+
+#Who are they ?
+ped[ped$animal == "M021087",] #unknown
+ped[ped$animal == "M031774",] #unknown
+ped[ped$animal == "M037858",] #unknown
+
+corrplot(kas[rownames(kas) %in% c("M021087","M031774","M037858","M038047"),
+             colnames(kas) %in% c("M021087","M031774","M037858","M038047")],
+         method = 'color',addCoef.col = 'black')
+
+```
+
+The kid has a bunch of unexpected links. Two unrelated individuals (among themselves) which could be his parents and one individuals with a genomic kinship of 0.17 which is only related to one of the potential parents and could be a half-sibling but we cannot really conclude anything so we'll remove the kid (M038047) from the data set.
+
+### group 15
+
+The next group is composed of three individuals: a supposed dad: `r {high$RingId2[46]}` and two of his supposed offspring: `r {high$RingId1[46:47]}`. Lets see what the genomic kinship matrix looks like:
+
+```{r BedhigherthanAS_pair15, echo = TRUE}
+
+listofFAM = c(high$RingId2[46], high$RingId1[46:47])
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+The kids are related with a genomic kinship of 0.19 but not related with the supposed dad (genomic kinship = 0). Let's first see if the dad has had any other offspring which we sequenced and which we could use to confirm his identity:
+
+```{r BedhigherthanAS_pair15dad, echo = TRUE}
+
+#individuals with the same dad:
+ped[(ped$sire == high$RingId2[46]) & (!is.na(ped$sire)),]
+
+#did we sequence them?
+"M032275" %in% rownames(kas)
+"M032287" %in% rownames(kas)
+"M032363" %in% rownames(kas)
+"M032364" %in% rownames(kas)
+"M032365" %in% rownames(kas)
+"M032366" %in% rownames(kas)
+"M032452" %in% rownames(kas)
+"M032453" %in% rownames(kas)
+"M032454" %in% rownames(kas)
+"M032455" %in% rownames(kas)
+
+```
+We sequenced two of them: M032454 and M032364. Let's see what their kinship with their dad is:
+
+```{r BedhigherthanAS_pair15dad2, echo = TRUE}
+
+listofFAM = c(high$RingId2[46], "M032454", "M032364")
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color', addCoef.col = 'black')
+
+```
+
+They both have a genomic kinship close to 0.25 with their supposed dad and of 0.12 between themselves which is expected as we know that they are half-siblings. So we can confirm that `r {high$RingId2[46]}` truly is himself. Now what about the kids ? We'll first try to see if we sequenced their supposed mom. If we did, we can check their kinship with her:
+
+```{r BedhigherthanAS_pair15mom, echo = TRUE}
+
+#individuals with the same dad:
+ped[(ped$animal == high$RingId1[46]),]
+
+#did we sequence the mom?
+"M032248" %in% rownames(kas)
+
+listofFAM = c(high$RingId1[46:47], "M032248")
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color', addCoef.col = 'black')
+
+```
+
+They both have a kinship around 0.25 with their mom which is good. Now let's see if we could identify their true father by looking for new links:
+
+```{r BedhigherthanAS_pair15kids, echo = TRUE}
+
+#new links ?
+row.names(kas)[which(kas[high$row[46],] > 0.16)]
+
+#who are they ?
+ped[ped$animal == "M031665",] #same mom
+ped[ped$animal == "M031666",] #same mom
+ped[ped$animal == "M031667",] #same mom
+ped[ped$animal == "M031668",] #same mom
+ped[ped$animal == "M032248",] #it's the mom
+ped[ped$animal == "M032449",] #unknown
+
+```
+
+We identified six new individuals: the mom (M032248), four kids (which share the same mom): M031665, M031666, M031667, and M031668 and one extra individual which actually is the father of the four kids we also identified: M032449! What is interesting is that this individual has a RingId VERY close to the supposed father... So this is probably a typo when we entered the clutch father ID... Let's visualize the "corrected kinship matrix":
+
+```{r BedhigherthanAS_pair15corrected, echo = TRUE}
+
+#individuals
+listofFAM = c(high$RingId1[46:47], "M031665", "M031666", "M031667", "M031668", "M032248", "M032449")
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color', addCoef.col = 'black')
+
+
+```
+
+The new family looks good. So we'll keep all the samples and correct the father ID!
+
+
+### group 16
+
+The next group is composed of two individuals: a supposed dad: `r {high$RingId2[48]}` and one of his supposed offspring: `r {high$RingId1[48]}`. Let's see what the genomic kinship matrix looks like:
+
+```{r BedhigherthanAS_pair16, echo = TRUE}
+
+listofFAM = c(high$RingId2[48], high$RingId1[48])
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+First, we can see that the self-kinship of the supposed dad (`r {high$RingId2[48]}`) is around 0.42 which is fairly low... Let's start with him: does he have other offspring? Did we sequenced them? What is their kinship with him?
+
+```{r BedhigherthanAS_pair16dad, echo = TRUE}
+
+#other kids?
+ped[(ped$sire == high$RingId2[48]) & (!is.na(ped$sire)),]
+
+#did we sequence them?
+"M031845" %in% rownames(kas)
+"M031846" %in% rownames(kas)
+"M031847" %in% rownames(kas)
+"M031848" %in% rownames(kas)
+"M031849" %in% rownames(kas)
+"M032318" %in% rownames(kas)
+"M032319" %in% rownames(kas)
+"M032320" %in% rownames(kas)
+"M032321" %in% rownames(kas)
+"M032322" %in% rownames(kas)
+"M031909" %in% rownames(kas)
+"M037683" %in% rownames(kas) #same clutch as M037684
+"M037685" %in% rownames(kas) #same clutch as M037684
+"M037686" %in% rownames(kas) #same clutch as M037684
+"M037687" %in% rownames(kas) #same clutch as M037684
+"M038038" %in% rownames(kas)
+"M038039" %in% rownames(kas)
+"M038040" %in% rownames(kas)
+"M038041" %in% rownames(kas)
+"M038042" %in% rownames(kas)
+
+```
+
+That guy had a LOT of offspring most of which we sequenced. Some of these offspring actually belong to the same clutch as his supposed kid! Let's see what the genomic kinship matrix looks like for those which we sequenced:
+
+```{r BedhigherthanAS_pair16dad2, echo = TRUE}
+
+listofFAM = c(high$RingId2[48], high$RingId1[48], "M031845", "M031847", 
+              "M031847", "M031848", "M031849", "M032318", "M032319",
+              "M032320", "M032321", "M032322", "M031909", "M037683",
+              "M037685", "M037686", "M037687", "M038040", "M038041",
+              "M038042")
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black', number.cex = .5)
+
+```
+
+The kinship matrix is big but we can clearly see 1) that the dad is related to everyone except the offspring we were investigating (`r {high$RingId1[48]}`) so we can be pretty confident that he is who we think he is; 2) the offspring we were investigating (`r {high$RingId1[48]}`) is completely unrelated with some of the other offspring but it looks like he is related as half-siblings should be (genomic kinship around 0.12) with two other clutches.
+
+Let's investigate the supposed offspring now. First let's see who his mom is and whether we sequenced her:
+
+```{r BedhigherthanAS_pair16kidmom, echo = TRUE}
+
+#other kids?
+ped[(ped$animal == high$RingId1[48]),]
+
+#did we sequence the mom?
+"M032129" %in% rownames(kas)
+
+```
+
+We did not sequence the mom so we can't confirm anything about this individual. Let's see who he is related to:
+
+```{r BedhigherthanAS_pair16kid, echo = TRUE}
+
+#new links?
+row.names(kas)[which(kas[high$row[48],] > 0.16)]
+
+#who are they?
+ped[ped$animal == "M031652",] #unknown
+ped[ped$animal == "M038130",] #same mom
+ped[ped$animal == "M038132",] #same mom
+ped[ped$animal == "M038133",] #same mom
+ped[ped$animal == "M038134",] #same mom
+
+corrplot(kas[rownames(kas) %in% c("M031652","M038130","M038132",
+                                  "M038133","M038133","M037684"),
+             colnames(kas) %in% c("M031652","M038130","M038132",
+                                  "M038133","M038133","M037684")],
+         method = 'color',addCoef.col = 'black')
+
+```
+
+This kid is related to five new individuals: four offspring with the same mom (which we did not sequenced) and their dad (M031652). It looks like this individual (`r {high$RingId1[48]}`) comes from another clutch or extra pair copulation but we cannot know. Since we cannot really know who this individual is, we'll remove him from the data set.
+
+### group 17
+
+The next group is composed of four individuals: a supposed dad: `r {high$RingId2[51]}` and three of his supposed offspring: `r {high$RingId1[51:53]}`. Let's see what the genomic kinship matrix looks like:
+
+```{r BedhigherthanAS_pair17, echo = TRUE}
+
+listofFAM = c(high$RingId2[51], high$RingId1[51:53])
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+All offspring have a sibling genomic kinship (close to 0.25), only the supposed dad (`r {high$RingId2[51]}`) is unrelated to all of them. As usual we need to know whether we did not sequence the individual we think we did or if he's just not the father of the clutch! So we'll start by looking for other offspring he could have:
+
+```{r BedhigherthanAS_pair17dad, echo = TRUE}
+
+#other offspring
+ped[(ped$sire == high$RingId2[51]) & (!is.na(ped$sire)),]
+
+#did we sequence them?
+"M043705" %in% rownames(kas)
+"M043706" %in% rownames(kas)
+
+#clutch ID?
+birds$BornClutchId[birds$RingId == "M043705"]
+birds$BornClutchId[birds$RingId == "M043706"]
+birds$BornClutchId[birds$RingId == "M043707"]
+birds$BornClutchId[birds$RingId == "M043708"]
+birds$BornClutchId[birds$RingId == "M043709"]
+
+```
+
+We did sequence two of his other offspring but weirdly they come from the same clutch as the three offspring we are investigating (M043707, M043708 and M043709). Let's see if we sequenced the mom first and then look at the entire family (with the five offspring, the dad and the mom) kinship matrix:
+
+```{r BedhigherthanAS_pair17allfam, echo = TRUE}
+
+#sequenced the mom
+"M037679" %in% rownames(kas)
+
+#family list
+listofFAM = c(high$RingId2[51], high$RingId1[51:53], "M043705", "M043706", "M037679")
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+Okay so the mom is the mom of all the offspring but the dad is only the dad of two of them. The three offspring we are investigating (M043707, M043708, M043709) and the two new offspring (M043705 and M043706) are half-sibling. What it looks like is extra-pair copulation from the female which resulted in half of the clutch fathered by one individual and the rest by another. The question now is can we identify the true father of the three offspring?
+
+```{r BedhigherthanAS_pair17allfam2, echo = TRUE}
+
+#new links?
+row.names(kas)[which(kas[high$row[51],] > 0.16)]
+
+#who are they?
+ped[ped$animal == "M032332",] #unknown
+ped[ped$animal == "M037679",] #the mom
+
+#correlation plot
+corrplot(kas[rownames(kas) %in% c("M032332","M037679","M043707",
+                                  "M043708", "M043709"),
+             colnames(kas) %in% c("M032332","M037679","M043707",
+                                  "M043708", "M043709")],
+         method = 'color',addCoef.col = 'black')
+
+```
+
+That guy is more related to the mom that to the kids so he's not the father but probably of relative of the mom. However, since we don't know the mom parents we can't be sure who he is. So what we'll do in the end is to keep all the samples and correct the pedigree.
+
+### group 18
+
+The next group is composed of two individuals: a supposed dad: `r {high$RingId2[61]}` and one of his supposed offspring: `r {high$RingId1[61]}`. Let's see what the genomic kinship matrix looks like:
+
+```{r BedhigherthanAS_pair18, echo = TRUE}
+
+listofFAM = c(high$RingId2[61], high$RingId1[61])
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+The supposed dad and kid are not related. As usual we'll first tart by investigating the dad: any other offspring or relatives?
+
+```{r BedhigherthanAS_pair18dad, echo = TRUE}
+
+#any other kids
+ped[(ped$sire == high$RingId2[61]) & (!is.na(ped$sire)),]
+
+#did we sequence them?
+"M043910" %in% rownames(kas)
+"M043911" %in% rownames(kas)
+"M043912" %in% rownames(kas)
+"M043909" %in% rownames(kas)
+"M040891" %in% rownames(kas)
+"M040892" %in% rownames(kas)
+"M040893" %in% rownames(kas)
+"M040705" %in% rownames(kas)
+"M040706" %in% rownames(kas)
+
+```
+
+He has many other offspring which we did sequence. What are their kinship?
+
+```{r BedhigherthanAS_pair18dad2, echo = TRUE}
+
+listofFAM = c(high$RingId2[61], "M043910", "M043911", "M043912",
+              "M043909", "M040891", "M040892", "M040893",
+              "M040705", "M040706")
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+This individual (`r {high$RingId2[61]}`) is correctly related (around 0.25) with all his supposed offspring so we can be pretty confident about the fact that he is who we think he is. We'll keep him, he's just not the father of this kid. This kid might actually be the problem let's investigate whether he has some siblings / related individuals.
+
+```{r BedhigherthanAS_pair18kid, echo = TRUE}
+
+#his parents
+ped[ped$animal == high$RingId1[61],]
+
+#any guys from the same clutch?
+ped[(ped$sire == high$RingId2[61]) & (!is.na(ped$sire)) &
+      (ped$dam == "M028824") & (!is.na(ped$dam)),]
+
+#did we sequence them?
+"M043910" %in% rownames(kas)
+"M043911" %in% rownames(kas)
+"M043912" %in% rownames(kas)
+"M043909" %in% rownames(kas)
+
+```
+
+We identified four offspring which came from the same clutch and which we already identified before as kids of the dad. What are they genomic kinship?
+
+```{r BedhigherthanAS_pair18kid2, echo = TRUE}
+
+listofFAM = c(high$RingId1[61], "M043909", "M043910", "M043911", "M043912")
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+It looks like our focal kid (`r {high$RingId1[61]}`) is half-sibling with the rest of the clutch. Did we sequenced the mom and what is her kinship with this clutch?
+
+```{r BedhigherthanAS_pair18kid3, echo = TRUE}
+
+"M028824" %in% rownames(kas)
+
+listofFAM = c(high$RingId1[61], "M043909", "M043910", "M043911", "M043912", "M028824")
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+She is the mother of all the clutch. So what do we do with this? Can we identify related individuals to this offspring (`r {high$RingId1[61]}`)? What are there genomic kinship?
+
+```{r BedhigherthanAS_pair18kid4, echo = TRUE}
+
+#new links?
+row.names(kas)[which(kas[high$row[61],] > 0.16)]
+
+#who are they?
+ped[ped$animal == "M028824",]
+ped[ped$animal == "M043672",]
+ped[ped$animal == "M043673",]
+ped[ped$animal == "M043674",]
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% c("M028824", "M043672", "M043673",
+                                             "M043674", "M043908"), 
+                     row.names(kas) %in% c("M028824", "M043672", "M043673",
+                                             "M043674", "M043908")]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+This guy is really the "true" sibling of the others. So we cannot be sure who he is so we'll remove him (`r {high$RingId1[61]}`) from the data set.
+
+### group 19
+
+The next group is composed of two individuals: a supposed dad: `r {high$RingId1[62]}` and two of his supposed offspring: `r {high$RingId2[62]}` and `r {high$RingId2[63]}`. Let's see what the genomic kinship matrix looks like:
+
+```{r BedhigherthanAS_pair19, echo = TRUE}
+
+listofFAM = c(high$RingId1[62], high$RingId2[62:63])
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+The two kids are related (genomic kinship = 0.27) like siblings but not related to the dad (genomic kinship = 0). Let's start by looking at whether the dad has other offspring, whether we sequenced them and what is their kinship with him?
+
+```{r BedhigherthanAS_pair19dad, echo = TRUE}
+
+#other offspring ?
+ped[(ped$sire == high$RingId1[62]) & (!is.na(ped$sire)),]
+
+#Did we sequence them ?
+"M040590" %in% rownames(kas)
+"M040591" %in% rownames(kas)
+"M040592" %in% rownames(kas)
+"M040990" %in% rownames(kas)
+"M040991" %in% rownames(kas)
+"M040992" %in% rownames(kas)
+"M040993" %in% rownames(kas)
+"M048328" %in% rownames(kas)
+"M049426" %in% rownames(kas)
+"M049427" %in% rownames(kas)
+"M049428" %in% rownames(kas)
+"M049429" %in% rownames(kas)
+"M049430" %in% rownames(kas)
+"M049431" %in% rownames(kas)
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% c("M040590", "M040592",
+                                             high$RingId1[62]), 
+                     row.names(kas) %in% c("M040590", "M040592",
+                                             high$RingId1[62])]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+The supposed dad (`r {high$RingId1[62]}`) is not related to any of his supposed offspring. So we can conclude that he is not who we think he is. Thus, we'll remove him from our data set.
+
+Now about the two offspring (`r {high$RingId2[62]}` and `r {high$RingId2[63]}`), are they who we think they are ? To answer this question, we'll use the mom: did we sequenced her and how is she related to them?
+
+```{r BedhigherthanAS_pair19dad2, echo = TRUE}
+
+#other offspring ?
+ped[ped$animal == high$RingId2[62],]
+
+#did we sequence her?
+"M028977" %in% rownames(kas)
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% c("M028977", high$RingId2[62],
+                                             high$RingId2[63]), 
+                     row.names(kas) %in%  c("M028977", high$RingId2[62],
+                                             high$RingId2[63])]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+We did sequence her and she's correctly related to them (genomic kinship around 0.25) so we'll keep both kids.
+
+
+### group 20
+
+The next group is a composed of four individuals: the supposed mom: `r {high$RingId1[64]}`, the supposed dad: `r {high$RingId1[65]}` and two of their supposed offspring: `r {high$RingId2[64]}` and `r {high$RingId2[66]}`. What does the kinship matrix look like?
+
+```{r BedhigherthanAS_pair20, echo = TRUE}
+
+listofFAM = c(high$RingId1[64], high$RingId1[65],
+              high$RingId2[64], high$RingId2[66])
+
+#corplot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+From the matrix the siblings are siblings but are not related to any of the parents... Are they related to anyone else? And if yes how?
+
+```{r BedhigherthanAS_pair20kids, echo = TRUE}
+
+#new links?
+row.names(kas)[which(kas[high$col[64],] > 0.16)]
+
+#who are they ?
+ped[ped$animal == "EA711589",]
+ped[ped$animal == "M043946",]
+
+#new list of individuals
+listofFAM = c(high$RingId1[64], high$RingId1[65], "EA711589",
+              high$RingId2[64], high$RingId2[66], "M043946")
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+The siblings (`r {high$RingId2[64]}` and `r {high$RingId2[66]}`) are related to two new owls which could be the parents. To further investigate this we'll see if these two owls have kids and if they really are the parents these others kids should be half-siblings with our focal kids (`r {high$RingId2[64]}` and `r {high$RingId2[66]}`):
+
+```{r BedhigherthanAS_pair20kidsparents, echo = TRUE}
+
+#new links?
+row.names(kas)[which(kas[rownames(kas) == "EA711589",] > 0.16)]
+row.names(kas)[which(kas[rownames(kas) == "M043946",] > 0.16)]
+
+```
+
+No other individuals are related to these individuals so we cannot confirm the kids identity. Consequently, we'll remove both (`r {high$RingId2[64]}` and `r {high$RingId2[66]}`) from our data set.
+
+Now what about the dad? Can we confirm who he is? To do this, we'll look for extra offspring he should have:
+
+```{r BedhigherthanAS_pair20dad, echo = TRUE}
+
+#other offspring ?
+ped[(ped$sire == high$RingId1[65]) & (!is.na(ped$sire)),]
+
+#Did we sequence them ?
+"M043648" %in% rownames(kas)
+"M047573" %in% rownames(kas)
+"M047574" %in% rownames(kas)
+"M047575" %in% rownames(kas)
+"M047576" %in% rownames(kas)
+"M047698" %in% rownames(kas)
+"M040993" %in% rownames(kas)
+"M047699" %in% rownames(kas)
+"M047700" %in% rownames(kas)
+"M047701" %in% rownames(kas)
+"M047702" %in% rownames(kas)
+"M047900" %in% rownames(kas)
+"M047801" %in% rownames(kas)
+"M047802" %in% rownames(kas)
+"M047803" %in% rownames(kas)
+"M049818" %in% rownames(kas)
+"M049819" %in% rownames(kas)
+"M049820" %in% rownames(kas)
+"M049821" %in% rownames(kas)
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% c("M047573", "M047574",
+                                             "M047575", high$RingId1[65]), 
+                     row.names(kas) %in% c("M047573", "M047574",
+                                             "M047575", high$RingId1[65])]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+The dad is the individual we though he was: he has a genomic kinship of 0.25 with his other supposed offspring! He's just not the dad of the kids we were investigating (`r {high$RingId2[64]}` and `r {high$RingId2[66]}`) ! So we will keep this guy in the data set.
+
+What about the mom? Can we make sure she is who we think she is? To do this, we'll look for any other offsprings or siblings and check what kinship she has with them:
+
+```{r BedhigherthanAS_pair20mom, echo = TRUE}
+
+#other offspring ?
+ped[(ped$dam == high$RingId1[64]) & (!is.na(ped$dam)),]
+
+#Did we sequence them ?
+"M043648" %in% rownames(kas) #no
+
+#any siblings ?
+ped[ped$animal == high$RingId1[64],]
+
+#any related individuals?
+row.names(kas)[which(kas[high$row[64],] > 0.16)]
+
+```
+
+She does not have any other kid or siblings or related individuals... We cannot confirm anything about her so we will remove her from the data set.
+
+### group 21
+
+The next group is composed of two individuals: a supposed dad: `r {high$RingId2[71]}` and his supposed offspring: `r {high$RingId1[71]}`. Let's see what the genomic kinship matrix looks like:
+
+```{r BedhigherthanAS_pair21, echo = TRUE}
+
+listofFAM = c(high$RingId2[71], high$RingId1[71])
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% listofFAM, 
+                     row.names(kas) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+They are genomically unrelated. Now we'll need to confirm wether the dad is really the individual we think he is by looking for other of his offspring:
+
+```{r BedhigherthanAS_pair21dad, echo = TRUE}
+
+#other offspring ?
+ped[(ped$sire == high$RingId2[71]) & (!is.na(ped$sire)),]
+
+#Did we sequence them ?
+"M043012" %in% rownames(kas)
+"M043013" %in% rownames(kas)
+"M043014" %in% rownames(kas)
+"M043015" %in% rownames(kas)
+"M043046" %in% rownames(kas)
+"M047598" %in% rownames(kas)
+"M047561" %in% rownames(kas)
+"M047562" %in% rownames(kas)
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% c(high$RingId2[71], "M043012",
+                                             "M043013", "M043014", "M043015",
+                                             "M043046", "M047598", "M047561",
+                                             "M047562"), 
+                     row.names(kas) %in% c(high$RingId2[71], "M043012",
+                                             "M043013", "M043014", "M043015",
+                                             "M043046", "M047598", "M047561",
+                                             "M047562")]),
+         method = 'color', addCoef.col = 'black')
+
+```
+
+The dad is who we think he is, since he really is the dad of the rest of his supposed offspring. Now what about the kid?
+
+What about the kid `r {high$RingId1[71]}`? Does he have any siblings?
+
+```{r BedhigherthanAS_pair21kid, echo = TRUE}
+
+ped[ped$animal == high$RingId1[71],]
+
+#any siblings with the same parents?
+ped[(ped$sire == high$RingId2[71]) & (!is.na(ped$sire)) &
+      (ped$dam == "M043628") & (!is.na(ped$dam)),]
+
+#Did we sequence them ?
+"M043012" %in% rownames(kas)
+"M043013" %in% rownames(kas)
+"M043014" %in% rownames(kas)
+"M043015" %in% rownames(kas)
+"M043046" %in% rownames(kas)
+"M047598" %in% rownames(kas)
+"M047561" %in% rownames(kas)
+"M047562" %in% rownames(kas)
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% c(high$RingId1[71], "M043012",
+                                             "M043013", "M043014", "M043015",
+                                             "M043046", "M047598", "M047561",
+                                             "M047562"), 
+                     row.names(kas) %in% c(high$RingId1[71], "M043012",
+                                             "M043013", "M043014", "M043015",
+                                             "M043046", "M047598", "M047561",
+                                             "M047562")]),
+         method = 'color', addCoef.col = 'black')
+
+```
+
+Seems like he is the half-sibling of all the other kids (which are the kids we identified as the dad's other kids btw). What about his mom? Did we sequence her and is he related to her? (Probably since he's half sibling with the rest of the clutch but let's check).
+
+```{r BedhigherthanAS_pair21mom, echo = TRUE}
+
+"M043628" %in% rownames(kas)
+
+#correlation plot
+corrplot(as.matrix(kas[row.names(kas) %in% c(high$RingId1[71], "M043628"), 
+                     row.names(kas) %in% c(high$RingId1[71], "M043628")]),
+         method = 'color', addCoef.col = 'black')
+
+```
+
+He's related to the mom! Can we try to identify who the dad might be by looking for new links?
+
+```{r BedhigherthanAS_pair21kidnewlinks, echo = TRUE}
+
+#new links?
+row.names(kas)[which(kas[high$row[71],] > 0.16)]
+
+#genomic kinship
+kas[rownames(kas) == high$RingId1[71],
+    colnames(kas) == "M043628"]
+
+#who are they?
+ped[ped$animal == "M043628",]
+
+```
+
+
+He's related to someone new. This guy could be the true father.
+
+EXTRA PAIR COPULATION AGAIN ????
+
+CHECK with ALEX !!!!
+
+## Round 2
+
+After visual checking, we noticed that it would be great to also check pairs for which we have more than 0.1 difference between (corrected) pedigree and new (after individuals trimming) AS genomic kinship. So we'll read the new genomic matrix, check difference with the corrected pedigree and start round 2 of correction:
+
+```{r round2, echo = TRUE}
+
+#read new AS after correction
+grmAS = readRDS("~/PhD/Barn_owl/ID_in3Kowls/data/All3085_AUTOSAUMES_RP502SNPs.RDS")
+kasCORRECTED = grm2kinship(grmAS)
+
+## PEDIGREE
+
+pedCORRECTED = ped
+
+## group 1
+
+#the father is not the father
+pedCORRECTED$sire[pedCORRECTED$animal %in% c(high$RingId1[1], high$RingId1[2], high$RingId1[3])] = "M026616"
+
+## group 2
+
+#both parents are not the parents (probably cross-fostering errors)
+pedCORRECTED$sire[pedCORRECTED$animal == high$RingId2[4]] = NA
+pedCORRECTED$dam[pedCORRECTED$animal == high$RingId2[4]] = NA
+
+## group 4
+
+#the dad is not the dad
+pedCORRECTED$sire[pedCORRECTED$animal == high$RingId1[7]] = NA
+pedCORRECTED$sire[pedCORRECTED$animal == high$RingId1[8]] = NA
+pedCORRECTED$sire[pedCORRECTED$animal == high$RingId1[9]] = NA
+pedCORRECTED$sire[pedCORRECTED$animal == high$RingId1[10]] = NA
+pedCORRECTED$sire[pedCORRECTED$animal == high$RingId1[11]] = NA
+
+#but he's the dad from some other clutches
+pedCORRECTED$sire[pedCORRECTED$animal == "M026834"] = "M032002"
+pedCORRECTED$sire[pedCORRECTED$animal == "M026836"] = "M032002"
+pedCORRECTED$sire[pedCORRECTED$animal == "M026837"] = "M032002"
+pedCORRECTED$sire[pedCORRECTED$animal == "M032031"] = "M032002"
+
+## group 6
+
+#the dad is not the dad
+#the siblings are actually half-siblings
+pedCORRECTED$sire[pedCORRECTED$animal == high$RingId1[12]] = NA
+
+## group 9
+
+#the dad is not the dad
+pedCORRECTED$sire[pedCORRECTED$animal %in% high$RingId1[16:19]] = "M022673"
+
+## group 10
+
+#DATABASE comment: the mom is not the mom
+pedCORRECTED$dam[pedCORRECTED$animal %in% high$RingId2[20:22]] = "M038110"
+
+## group 12
+
+#the dad is not the dad
+pedCORRECTED$sire[pedCORRECTED$animal == high$RingId2[36]] = NA
+
+## group 13
+
+#the mom is not the mom
+pedCORRECTED$dam[pedCORRECTED$animal %in% high$RingId1[38:42]] = NA
+
+## group 15
+
+#the dad is not the dad
+pedCORRECTED$sire[pedCORRECTED$animal %in% high$RingId1[46:47]] = "M032449"
+
+## group 17
+
+#extra pair copulation, we found the true father:
+pedCORRECTED$sire[pedCORRECTED$animal %in% high$RingId1[51:53]] = NA
+
+### FORMAT PEDIGREE
+
+colnames(pedCORRECTED) = c("id","dadid","momid", "sex")
+#sex NA to 3
+pedCORRECTED$sex[is.na(pedCORRECTED$sex)] = 3
+#if only one parent know -> both NA
+pedCORRECTED$dadid[is.na(pedCORRECTED$momid)] = NA
+pedCORRECTED$momid[is.na(pedCORRECTED$dadid)] = NA
+
+#pass to pedigree object
+pedCORRECTED.2 = kinship2::pedigree(id = pedCORRECTED$id, dadid = pedCORRECTED$dadid, momid = pedCORRECTED$momid, sex = pedCORRECTED$sex)
+#recalculate pedigree kinship
+PedKinCORRECTED = kinship2::kinship(pedCORRECTED.2)
+
+#Subset individuals in kasCORRECTED matrix
+PedKinCORRECTEDsub = PedKinCORRECTED[rownames(PedKinCORRECTED) %in% rownames(kasCORRECTED),
+                                     colnames(PedKinCORRECTED) %in% colnames(kasCORRECTED)]
+
+
+#order so that individuals' order matches AS kinship matrix order
+orderCOL = match(colnames(kasCORRECTED), colnames(PedKinCORRECTEDsub))
+PedKinCORRECTEDsubOrder = PedKinCORRECTEDsub[orderCOL,orderCOL]
+
+#sanity check
+unique(colnames(kasCORRECTED) == colnames(PedKinCORRECTEDsubOrder))
+unique(rownames(kasCORRECTED) == rownames(PedKinCORRECTEDsubOrder))
+
+
+
+```
+
+Just like before we'll identify pairs for which the difference is above 0.1:
+
+```{r round2diff, echo = TRUE}
+
+#### Recalculate difference
+diff_kinCORRECTEDmat = as.matrix(PedKinCORRECTEDsubOrder) - as.matrix(kasCORRECTED)
+diff_kinCORRECTEDmat.2 = diff_kinCORRECTEDmat
+diff_kinCORRECTEDmat.2[upper.tri(diff_kinCORRECTEDmat.2)] = NA
+diag(diff_kinCORRECTEDmat.2) = NA
+
+#identify weird pairs
+WeirdHighKin <- as.data.frame(which(diff_kinCORRECTEDmat.2 > 0.1, arr.ind=T))
+rownames(WeirdHighKin) <- NULL
+WeirdHighKin$dif<- NA
+WeirdHighKin$p <- NA
+WeirdHighKin$b <- NA
+
+#Loop through difference to add indv RingId
+for(i in 1:nrow(WeirdHighKin)){
+  WeirdHighKin$dif[i] <- diff_kinCORRECTEDmat.2[WeirdHighKin$row[i],WeirdHighKin$col[i]]
+  WeirdHighKin$p[i] <- kasCORRECTED[WeirdHighKin$row[i],WeirdHighKin$col[i]]
+  WeirdHighKin$b[i] <- PedKinCORRECTEDsubOrder[WeirdHighKin$row[i],WeirdHighKin$col[i]]
+}
+
+#Set row.names and col.names
+WeirdHighKin$RingId1 <- row.names(diff_kinCORRECTEDmat.2)[WeirdHighKin$row]
+WeirdHighKin$RingId2 <- colnames(diff_kinCORRECTEDmat.2)[WeirdHighKin$col]
+
+length(unique(c(WeirdHighKin$row,WeirdHighKin$col)))
+
+```
+
+## group 22
+
+The group is composed of four individuals: `r {WeirdHighKin$RingId1[1]}` and three of his half-siblings: `r {WeirdHighKin$RingId2[1:3]}`. Let's see what the kinship matrix looks like:
+
+```{r BedhigherthanAS_pair22, echo = TRUE}
+
+listofFAM = c(WeirdHighKin$RingId1[1], WeirdHighKin$RingId2[1:3])
+
+#correlation plot
+corrplot(as.matrix(kasCORRECTED[row.names(kasCORRECTED) %in% listofFAM, 
+                     row.names(kasCORRECTED) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+`r {WeirdHighKin$RingId2[1:3]}` look good, their kinship matches what we expect from siblings and hal-siblings, only `r {WeirdHighKin$RingId1[1]}` is not related to any of them! What about their dad (or supposed dad for `r {WeirdHighKin$RingId1[1]}`): did we sequence him ?
+
+```{r BedhigherthanAS_pair22dad, echo = TRUE}
+
+pedCORRECTED[pedCORRECTED$id == "898166",]
+
+#did we sequence his dad?
+"866268" %in% rownames(kasCORRECTED)
+
+```
+
+Nop, let's look for his mom, siblings or kids to confirm his identity:
+
+```{r BedhigherthanAS_pair22kid, echo = TRUE}
+
+#did we sequenced his mom?
+"889528" %in% rownames(kasCORRECTED)
+
+#no
+
+#any siblings?
+pedCORRECTED[(pedCORRECTED$momid == "889528") & (!is.na(pedCORRECTED$momid)) &
+               (pedCORRECTED$dadid == "866268") & (!is.na(pedCORRECTED$dadid)),]
+
+#did we sequence them?
+"898162" %in% rownames(kasCORRECTED)
+"898163" %in% rownames(kasCORRECTED)
+"898164" %in% rownames(kasCORRECTED)
+"898165" %in% rownames(kasCORRECTED)
+"898167" %in% rownames(kasCORRECTED)
+"899066" %in% rownames(kasCORRECTED)
+"899067" %in% rownames(kasCORRECTED)
+"899068" %in% rownames(kasCORRECTED)
+"899069" %in% rownames(kasCORRECTED)
+"899070" %in% rownames(kasCORRECTED)
+"899071" %in% rownames(kasCORRECTED)
+
+#We did not sequence any of them...
+
+#Any kids ?
+pedCORRECTED[(pedCORRECTED$momid == "898166") & (!is.na(pedCORRECTED$momid)),]
+
+#did we sequence them?
+"M005328" %in% rownames(kasCORRECTED)
+"M005329" %in% rownames(kasCORRECTED)
+"M005330" %in% rownames(kasCORRECTED)
+"M005331" %in% rownames(kasCORRECTED)
+"M005332" %in% rownames(kasCORRECTED)
+
+```
+
+We did not sequence any of his parents, siblings or kids which could be used to confirm his identity. So we'll have to remove that sample.
+
+## group 23
+
+This group is composed of two supposed siblings: `r {WeirdHighKin$RingId1[4]}` and `r {WeirdHighKin$RingId2[4]}`. Let's first check their genomic kinship:
+
+```{r BedhigherthanAS_pair23, echo = TRUE}
+
+listofFAM = c(WeirdHighKin$RingId1[4], WeirdHighKin$RingId2[4])
+
+#correlation plot
+corrplot(as.matrix(kasCORRECTED[row.names(kasCORRECTED) %in% listofFAM, 
+                     row.names(kasCORRECTED) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+From this kinship matrix, it looks like these guys are actually half-siblings. Let's see if we sequenced other siblings from this clutch, or their supposed parents:
+
+```{r BedhigherthanAS_pair23sib, echo = TRUE}
+
+pedCORRECTED[pedCORRECTED$id == WeirdHighKin$RingId1[4],]
+pedCORRECTED[pedCORRECTED$id == WeirdHighKin$RingId2[4],]
+
+#did we sequence the parents?
+"M032203" %in% rownames(kasCORRECTED)
+"M032228" %in% rownames(kasCORRECTED)
+
+#any siblings?
+pedCORRECTED[(pedCORRECTED$momid == "M032228") & (!is.na(pedCORRECTED$momid)) &
+               (pedCORRECTED$dadid == "M032203") & (!is.na(pedCORRECTED$dadid)),]
+
+#did we sequence them?
+"M032283" %in% rownames(kasCORRECTED)
+"M032301" %in% rownames(kasCORRECTED)
+"M032302" %in% rownames(kasCORRECTED)
+"M032303" %in% rownames(kasCORRECTED)
+"M032304" %in% rownames(kasCORRECTED)
+"M032305" %in% rownames(kasCORRECTED)
+"M032422" %in% rownames(kasCORRECTED)
+"M032423" %in% rownames(kasCORRECTED)
+
+```
+
+Let's see the entire kinship matrix:
+
+```{r BedhigherthanAS_pair23plot, echo = TRUE}
+
+listofFAM = c("M032203", "M032228", "M032302", "M032303", "M032304",
+              "M032305", "M032422", "M032423",
+              WeirdHighKin$RingId1[4], WeirdHighKin$RingId2[4])
+
+#correlation plot
+corrplot(as.matrix(kasCORRECTED[row.names(kasCORRECTED) %in% listofFAM, 
+                     row.names(kasCORRECTED) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+Nothing seems wrong... Could it be because `r {WeirdHighKin$RingId1[4]}` has low self kinship (0.41) which reduces its kinship with the rest of his family? It's coverage is 1.4145X.
+
+### pair 24
+
+This group is composed of four individuals all siblings: `r {WeirdHighKin$RingId2[5]}` and `r {WeirdHighKin$RingId1[5:7]}`. Let's first see the kinship matrix:
+
+```{r BedhigherthanAS_pair24, echo = TRUE}
+
+listofFAM = c(WeirdHighKin$RingId2[5], WeirdHighKin$RingId1[5:7])
+
+#correlation plot
+corrplot(as.matrix(kasCORRECTED[row.names(kasCORRECTED) %in% listofFAM, 
+                     row.names(kasCORRECTED) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+the kinship is weird for siblings. Let's see if we sequenced other siblings from this clutch, or their supposed parents:
+
+```{r BedhigherthanAS_pair24sib, echo = TRUE}
+
+pedCORRECTED[pedCORRECTED$id == WeirdHighKin$RingId2[5],]
+pedCORRECTED[pedCORRECTED$id %in% WeirdHighKin$RingId1[5:7],]
+
+#did we sequence the parents?
+"M028883" %in% rownames(kasCORRECTED) #no
+"M022875" %in% rownames(kasCORRECTED) #yes
+
+#any siblings?
+pedCORRECTED[(pedCORRECTED$momid == "M022875") & (!is.na(pedCORRECTED$momid)) &
+               (pedCORRECTED$dadid == "M028883") & (!is.na(pedCORRECTED$dadid)),]
+
+#did we sequence them?
+"M022901" %in% rownames(kasCORRECTED)
+"M022906" %in% rownames(kasCORRECTED)
+"M032281" %in% rownames(kasCORRECTED)
+"M032282" %in% rownames(kasCORRECTED)
+"M032392" %in% rownames(kasCORRECTED)
+"M032393" %in% rownames(kasCORRECTED)
+"M037699" %in% rownames(kasCORRECTED)
+"M038223" %in% rownames(kasCORRECTED)
+"M038224" %in% rownames(kasCORRECTED)
+
+```
+
+Let's see the entire kinship matrix:
+
+```{r BedhigherthanAS_pair24plot, echo = TRUE}
+
+listofFAM = c("M028883", "M022875", "M022901", "M022906", "M032393",
+              "M037699", "M038223", "M038224",
+              WeirdHighKin$RingId2[5], WeirdHighKin$RingId1[5:7])
+
+#correlation plot
+corrplot(as.matrix(kasCORRECTED[row.names(kasCORRECTED) %in% listofFAM, 
+                     row.names(kasCORRECTED) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+Same as before, could it be because `r {WeirdHighKin$RingId2[5]}` has low self kinship (0.40) which reduces its kinship with the rest of his family? It's coverage was 2.0392X.
+
+### pair 25
+
+This group is composed of a male: `r {WeirdHighKin$RingId1[8]}` and his mom: `r {WeirdHighKin$RingId2[8]}`. Let's first see the kinship matrix:
+
+```{r BedhigherthanAS_pair25, echo = TRUE}
+
+pedCORRECTED[pedCORRECTED$id == WeirdHighKin$RingId1[8], ]
+pedCORRECTED[pedCORRECTED$id == WeirdHighKin$RingId2[8], ]
+
+listofFAM = c(WeirdHighKin$RingId1[8], WeirdHighKin$RingId2[8])
+
+#correlation plot
+corrplot(as.matrix(kasCORRECTED[row.names(kasCORRECTED) %in% listofFAM, 
+                     row.names(kasCORRECTED) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+They should be mom and son but their kinship is lower than that... 
+
+
+
+See what you can do here but I am not sure maybe check the dad ??
+
+
+
+
+
+
+
+```{r BedhigherthanAS_pair25parents, echo = TRUE}
+
+pedCORRECTED[pedCORRECTED$id == WeirdHighKin$RingId1[8], ]
+pedCORRECTED[pedCORRECTED$id == WeirdHighKin$RingId2[8], ]
+
+#did we sequence the parents?
+"M012595" %in% rownames(kasCORRECTED)
+"M026258" %in% rownames(kasCORRECTED)
+"M022393" %in% rownames(kasCORRECTED)
+"M022674" %in% rownames(kasCORRECTED)
+
+listofFAM = c(WeirdHighKin$RingId1[8], WeirdHighKin$RingId2[8],
+              "M012595", "M022393", "M022674")
+
+#correlation plot
+corrplot(as.matrix(kasCORRECTED[row.names(kasCORRECTED) %in% listofFAM, 
+                     row.names(kasCORRECTED) %in% listofFAM ]),
+         method = 'color',addCoef.col = 'black')
+
+```
+
+Okay so the the mom of 
+
