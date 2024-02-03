@@ -145,9 +145,9 @@ all_f_hat_juve_df=all_f_hat_juve%>%
   add_column(mod_name=c("Tarsus length.Funi.(simple model)","Tarsus length.Funi.(animal model)", 
                         "Mass.Funi.(simple model)", "Mass.Funi.(animal model)", 
                         "Bill length.Funi.(simple model)", "Bill length.Funi.(animal model)",
-                        "Tarsus length.Froh.(simple model)","Tarsus length.Froh.(animal model)", 
-                        "Mass.Froh.(simple model)", "Mass.Froh.(animal model)", 
-                        "Bill length.Froh.(simple model)", "Bill length.Froh.(animal model)"))%>%
+                        "Tarsus length.Fhbd.(simple model)","Tarsus length.Fhbd.(animal model)", 
+                        "Mass.Fhbd.(simple model)", "Mass.Fhbd.(animal model)", 
+                        "Bill length.Fhbd.(simple model)", "Bill length.Fhbd.(animal model)"))%>%
   separate_wider_delim(mod_name, delim = ".", names = c("trait","F", "model"), cols_remove = F)%>%
   mutate(mod_name =as.character(mod_name))
 
@@ -155,23 +155,25 @@ all_f_hat_juve_df=all_f_hat_juve%>%
 all_f_hat_juve_df$mod_name<-ordered(all_f_hat_juve_df$mod_name,
                                     levels = c(
                                       
-                                      "Tarsus length.Froh.(animal model)", "Tarsus length.Froh.(simple model)",
+                                      "Tarsus length.Fhbd.(animal model)", "Tarsus length.Fhbd.(simple model)",
                                       "Tarsus length.Funi.(animal model)", "Tarsus length.Funi.(simple model)",
-                                      "Mass.Froh.(animal model)", "Mass.Froh.(simple model)", 
+                                      "Mass.Fhbd.(animal model)", "Mass.Fhbd.(simple model)", 
                                       "Mass.Funi.(animal model)", "Mass.Funi.(simple model)",
-                                      "Bill length.Froh.(animal model)", "Bill length.Froh.(simple model)",
+                                      "Bill length.Fhbd.(animal model)", "Bill length.Fhbd.(simple model)",
                                       "Bill length.Funi.(animal model)", "Bill length.Funi.(simple model)"
                                       
                                     ))
 
+## rename F
+all_f_hat_juve_df$F <- recode_factor(all_f_hat_juve_df$F, "Funi" = "Funi", "Froh" = "Fhbd")
 ## just getting the F in the right order
-all_f_hat_juve_df$F <- ordered(all_f_hat_juve_df$F, levels = c("Funi","Froh"))
+all_f_hat_juve_df$F <- ordered(all_f_hat_juve_df$F, levels = c("Funi","Fhbd"))
 
-labels = c("Tarsus Length (Froh)\n(animal model)\nn = 6'490", "Tarsus Length (Froh)\n(simple model)\nn = 6'490",
+labels = c("Tarsus Length (Fhbd)\n(animal model)\nn = 6'490", "Tarsus Length (Fhbd)\n(simple model)\nn = 6'490",
            "Tarsus Length (Funi)\n(animal model)\nn = 6'490", "Tarsus Length (Funi)\n(simple model)\nn = 6'490",
-           "Mass (Froh)\n(animal model)\nn = 9'864", "Mass (Froh)\n(simple model)\nn = 9'864",
+           "Mass (Fhbd)\n(animal model)\nn = 9'864", "Mass (Fhbd)\n(simple model)\nn = 9'864",
            "Mass (Funi)\n(animal model)\nn = 9'864", "Mass (Funi)\n(simple model)\nn = 9'864",
-           "Bill Length (Froh)\n(animal model)\nn = 6'128", "Bill Length (Froh)\n(simple model)\nn = 6'128",
+           "Bill Length (Fhbd)\n(animal model)\nn = 6'128", "Bill Length (Fhbd)\n(simple model)\nn = 6'128",
            "Bill Length (Funi)\n(animal model)\nn = 6'128", "Bill Length (Funi)\n(simple model)\nn = 6'128"
            )
 
@@ -215,11 +217,11 @@ for (i in all_f_adults){
 all_f_hat_adults_df=all_f_hat_adults%>%
   rename("est"="V1","upr"="V2","lwr"="V3")%>%
   add_column(mod_name=c("Tarsus length.Funi.(simple model)", "Tarsus length.Funi.(animal model)",
-                        "Tarsus length.Froh.(simple model)", "Tarsus length.Froh.(animal model)",
+                        "Tarsus length.Fhbd.(simple model)", "Tarsus length.Fhbd.(animal model)",
                         "Mass.Funi.(simple model)", "Mass.Funi.(animal model)", 
-                        "Mass.Froh.(simple model)", "Mass.Froh.(animal model)",
+                        "Mass.Fhbd.(simple model)", "Mass.Fhbd.(animal model)",
                         "Bill length.Funi.(simple model)", "Bill length.Funi.(animal model)",
-                        "Bill length.Froh.(simple model)", "Bill length.Froh.(animal model)"
+                        "Bill length.Fhbd.(simple model)", "Bill length.Fhbd.(animal model)"
   ))%>%
   separate_wider_delim(mod_name, delim = ".", names = c("trait","F", "model"), cols_remove = F)%>%
   mutate(mod_name=as.character(mod_name))
@@ -228,23 +230,25 @@ all_f_hat_adults_df=all_f_hat_adults%>%
 all_f_hat_adults_df$mod_name<-ordered(all_f_hat_adults_df$mod_name,
                                     levels = c(
                                       
-                                      "Tarsus length.Froh.(animal model)", "Tarsus length.Froh.(simple model)",
+                                      "Tarsus length.Fhbd.(animal model)", "Tarsus length.Fhbd.(simple model)",
                                       "Tarsus length.Funi.(animal model)", "Tarsus length.Funi.(simple model)",
-                                      "Mass.Froh.(animal model)", "Mass.Froh.(simple model)", 
+                                      "Mass.Fhbd.(animal model)", "Mass.Fhbd.(simple model)", 
                                       "Mass.Funi.(animal model)", "Mass.Funi.(simple model)",
-                                      "Bill length.Froh.(animal model)", "Bill length.Froh.(simple model)",
+                                      "Bill length.Fhbd.(animal model)", "Bill length.Fhbd.(simple model)",
                                       "Bill length.Funi.(animal model)", "Bill length.Funi.(simple model)"
                                       
                                     ))
 
+## rename F
+all_f_hat_adults_df$F <- recode_factor(all_f_hat_adults_df$F, "Funi" = "Funi", "Froh" = "Fhbd")
 ## just getting the F in the right order
-all_f_hat_adults_df$F <- ordered(all_f_hat_adults_df$F, levels = c("Funi","Froh"))
+all_f_hat_adults_df$F <- ordered(all_f_hat_adults_df$F, levels = c("Funi","Fhbd"))
 
-labels = c("Tarsus Length (Froh)\n(animal model) n = 773", "Tarsus Length (Froh)\n(simple model) n = 773",
+labels = c("Tarsus Length (Fhbd)\n(animal model) n = 773", "Tarsus Length (Fhbd)\n(simple model) n = 773",
            "Tarsus Length (Funi)\n(animal model) n = 773", "Tarsus Length (Funi)\n(simple model) n = 773",
-           "Mass (Froh)\n(animal model) n = 3'677", "Mass (Froh)\n(simple model) n = 3'677",
+           "Mass (Fhbd)\n(animal model) n = 3'677", "Mass (Fhbd)\n(simple model) n = 3'677",
            "Mass (Funi)\n(animal model) n = 3'677", "Mass (Funi)\n(simple model) n = 3'677",
-           "Bill Length (Froh)\n(animal model) n = 2'061", "Bill Length (Froh)\n(simple model) n = 2'061",
+           "Bill Length (Fhbd)\n(animal model) n = 2'061", "Bill Length (Fhbd)\n(simple model) n = 2'061",
            "Bill Length (Funi)\n(animal model) n = 2'061", "Bill Length (Funi)\n(simple model) n = 2'061"
 )
 
@@ -301,10 +305,10 @@ eggies=rbind(hat_eggslaid_Funi,hat_eggslaid_Froh)%>%
 
 fhat_eggies=eggies%>%
   rename("est"="V1","upr"="V2","lwr"="V3")%>%
-  add_column(mod_name=c(  "# eggs laid.Funi.(simple model)", "# eggs laid.Froh.(simple model)",
-                          "# eggs laid.Funi.(animal model)", "# eggs laid.Froh.(animal model)",
+  add_column(mod_name=c(  "# eggs laid.Funi.(simple model)", "# eggs laid.Fhbd.(simple model)",
+                          "# eggs laid.Funi.(animal model)", "# eggs laid.Fhbd.(animal model)",
                           "Probability of\nEggs hatching \n(Female).Funi.(simple model)", "Probability of\nEggs hatching \n(Male).Funi.(simple model)",
-                          "Probability of\nEggs hatching \n(Female).Froh.(simple model)", "Probability of\nEggs hatching \n(Male).Froh.(simple model)"
+                          "Probability of\nEggs hatching \n(Female).Fhbd.(simple model)", "Probability of\nEggs hatching \n(Male).Fhbd.(simple model)"
                           
   ))%>%
   separate_wider_delim(mod_name, delim = ".", names = c("trait","F", "model"), cols_remove = F)%>%
@@ -314,24 +318,26 @@ fhat_eggies=eggies%>%
 fhat_eggies$mod_name<-ordered(fhat_eggies$mod_name,
                                       levels = c(
                                         
-                                        "# eggs laid.Froh.(animal model)", "# eggs laid.Froh.(simple model)",
+                                        "# eggs laid.Fhbd.(animal model)", "# eggs laid.Fhbd.(simple model)",
                                         "# eggs laid.Funi.(animal model)", "# eggs laid.Funi.(simple model)",
-                                        "Probability of\nEggs hatching \n(Male).Froh.(simple model)", "Probability of\nEggs hatching \n(Male).Funi.(simple model)", 
-                                        "Probability of\nEggs hatching \n(Female).Froh.(simple model)", "Probability of\nEggs hatching \n(Female).Funi.(simple model)"
+                                        "Probability of\nEggs hatching \n(Male).Fhbd.(simple model)", "Probability of\nEggs hatching \n(Male).Funi.(simple model)", 
+                                        "Probability of\nEggs hatching \n(Female).Fhbd.(simple model)", "Probability of\nEggs hatching \n(Female).Funi.(simple model)"
 
                                       ))
 
+## rename F
+fhat_eggies$F <- recode_factor(fhat_eggies$F, "Funi" = "Funi", "Froh" = "Fhbd")
 ## just getting the F in the right order
-fhat_eggies$F <- ordered(fhat_eggies$F, levels = c("Funi","Froh"))
+fhat_eggies$F <- ordered(fhat_eggies$F, levels = c("Funi","Fhbd"))
 ## just getting the traits in the right order
 fhat_eggies$trait <- ordered(fhat_eggies$trait, levels = c("Probability of\nEggs hatching \n(Female)", "Probability of\nEggs hatching \n(Male)", "# eggs laid"))
 
 fhat_eggies
 
-labels = c("# eggs laid (Froh)\n(animal model)\nn= 489", "# eggs laid (Froh)\n(simple model)\nn= 489",
+labels = c("# eggs laid (Fhbd)\n(animal model)\nn= 489", "# eggs laid (Fhbd)\n(simple model)\nn= 489",
            "# eggs laid (Funi)\n(animal model)\nn= 489","# eggs laid (Funi)\n(simple model)\nn= 489",
-           "Probability of Eggs hatching \n(Male Froh & simple model)\nn = 389", "Probability of Eggs hatching \n(Male Funi & simple model)\nn = 389",
-           "Probability of Eggs hatching \n(Female Froh & simple model)\nn = 389", "Probability of Eggs hatching \n(Female Funi & simple model)\nn = 389")
+           "Probability of Eggs hatching \n(Male Fhbd) (simple model)\nn = 389", "Probability of Eggs hatching \n(Male Funi) (simple model)\nn = 389",
+           "Probability of Eggs hatching \n(Female Fhbd) (simple model)\nn = 389", "Probability of Eggs hatching \n(Female Funi) (simple model)\nn = 389")
 
 adult_model_com_eggies=ggplot(data=fhat_eggies, aes(x=mod_name, y=est, ymin=upr, ymax=lwr, col=trait, shape=F)) +
   geom_pointrange(position = position_dodge2(width = 0.5)) +
